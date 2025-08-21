@@ -18,7 +18,7 @@ class EditNas extends EditRecord
         ];
     }
 
-    public static function afterSave($record)
+    public static function afterSave()
     {
         self::reloadFreeRadius();
     }

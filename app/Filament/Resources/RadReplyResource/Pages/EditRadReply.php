@@ -4,9 +4,10 @@ namespace App\Filament\Resources\RadReplyResource\Pages;
 
 use App\Filament\Resources\RadReplyResource;
 use App\Models\Nas;
+use App\Models\RadAcct;
 use Filament\Pages\Actions;
 use Filament\Resources\Pages\EditRecord;
-use Illuminate\Database\Eloquent\Model;
+use Log;
 
 class EditRadReply extends EditRecord
 {
@@ -19,16 +20,24 @@ class EditRadReply extends EditRecord
         ];
     }
 
-    protected function afterSave(Model $record): void
+    protected function afterSave(): void
     {
-        $checkNas = Nas::where('username', $record->username)->firstOrFail();
-        $username = escapeshellarg($record->username);
-        $rateLimit = escapeshellarg($record->value); // Pastikan value sesuai format "15M/10M"
-        $ipAddress = $checkNas->nasname; // Bisa dijadikan ENV jika dinamis
-        $port = $checkNas->ports; // Bisa dijadikan ENV jika dinamis
-        $secret = $checkNas->secret; // Bisa dijadikan ENV jika dinamis
-        $command = "echo \"User-Name={$username}, Mikrotik-Rate-Limit='{$rateLimit}'\" | radclient -x {$ipAddress}:{$port} coa {$secret}";
-
-        shell_exec($command);
+        $checkRadAcct = RadAcct::where('username', $this->record->username)->firstOrFail();
+        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+        $username = escapeshellarg($this->record->username);
+        $rateLimit = escapeshellarg($this->record->value); // Pastikan value sesuai format "15M/10M"
+        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $commandChangeBandwidth = "echo \"User-Name={$username}, Mikrotik-Rate-Limit={$rateLimit}\" | radclient -x {$ipAddress}:{$port} coa {$secret}";
+        // $commandDisconnect = "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+        Log::info('commandChangeBandwidth: '.$commandChangeBandwidth);
+        $outputChangeBandwidth = shell_exec($commandChangeBandwidth);
+        // $outputDisconnect = shell_exec($commandDisconnect);
+        if ($outputChangeBandwidth) {
+            Log::info("Command Output: \n".$outputChangeBandwidth);
+        } else {
+            Log::warning('Perintah gagal atau tidak ada output.');
+        }
     }
 }

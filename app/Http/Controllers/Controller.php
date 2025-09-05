@@ -2,16 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Nas;
-use App\Models\RadCheck;
-use App\Models\RadReply;
 use App\Services\RadiusService;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller as BaseController;
-use Log;
+use Illuminate\Support\Facades\Log;
 
 class Controller extends BaseController
 {
@@ -26,15 +23,18 @@ class Controller extends BaseController
 
     public function activateUser(Request $request)
     {
-        // $request->validate([
-        //     'username' => 'required|string|unique:radcheck,username',
-        //     'password' => 'required|string|min:6',
-        //     'vendor' => 'required|string|in:mikrotik,cisco,juniper',
-        //     'ipAddress' => 'required|ip',
-        //     'port' => 'required|integer',
-        //     'secret' => 'required|string',
-        // ]);
-        $customer = $request->customer;
+        $request->validate([
+            'customer' => 'required|string|unique:radcheck,username',
+            'password' => 'required|string|min:6',
+            'vendor' => 'required|string|in:mikrotik,mikrotik_pppoe,mikrotik_hotspot,cisco,juniper,huawei',
+            'ipAddress' => 'required|ip',
+            'port' => 'required|integer|min:1|max:65535',
+            'secret' => 'required|string|min:6',
+            'max_download' => 'required|string',
+            'max_upload' => 'required|string',
+            'min_download' => 'nullable|string',
+            'min_upload' => 'nullable|string',
+        ]);
 
         try {
             $result = $this->radiusService->addUser(
@@ -43,23 +43,60 @@ class Controller extends BaseController
                 $request->vendor,
                 $request->ipAddress,
                 $request->port,
-                $request->secret
+                $request->secret,
+                [
+                    'max_download' => $request->max_download,
+                    'max_upload' => $request->max_upload,
+                    'min_download' => $request->min_download ?? '1M',
+                    'min_upload' => $request->min_upload ?? '1M',
+                ]
             );
 
-            return response()->json(['message' => $result], 201);
+            return response()->json([
+                'success' => true,
+                'message' => $result,
+                'data' => [
+                    'username' => $request->customer,
+                    'vendor' => $request->vendor,
+                    'bandwidth' => [
+                        'download' => $request->max_download,
+                        'upload' => $request->max_upload,
+                    ],
+                    'nas' => $request->ipAddress.':'.$request->port,
+                ],
+            ], 201);
         } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            Log::error('Failed to activate user: '.$e->getMessage(), [
+                'username' => $request->customer,
+                'vendor' => $request->vendor,
+                'ip' => $request->ipAddress,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
         }
     }
 
     public function checkFUP()
     {
         try {
-            $this->radiusService->checkFUPAndApplyLimit();
+            $results = $this->radiusService->checkFUPAndApplyLimit();
 
-            return response()->json(['message' => 'FUP check executed successfully']);
+            return response()->json([
+                'success' => true,
+                'message' => 'FUP check executed successfully',
+                'processed_users' => count($results),
+                'details' => $results,
+            ]);
         } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            Log::error('FUP check failed: '.$e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
         }
     }
     // public function activateUser(Request $request)

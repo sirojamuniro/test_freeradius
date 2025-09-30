@@ -349,8 +349,8 @@ class RadiusService
     {
         return match($vendor) {
             'mikrotik', 'mikrotik_pppoe', 'mikrotik_hotspot' => [
-                'initial_speed' => $bandwidth['max_upload'] . '/' . $bandwidth['max_download'],
-                'fup_speed' => $bandwidth['min_upload'] . '/' . $bandwidth['min_download'],
+                'initial_speed' => $bandwidth['max_download'] . '/' . $bandwidth['max_upload'],
+                'fup_speed' => $bandwidth['min_download'] . '/' . $bandwidth['min_upload'],
                 'attribute' => 'Mikrotik-Rate-Limit',
                 'vendor_type' => 'mikrotik'
             ],
@@ -405,13 +405,13 @@ class RadiusService
                 if (!$currentSpeed) return null;
                 
                 if (strpos($currentSpeed->value, '/') !== false) {
-                    [$upload, $download] = explode('/', $currentSpeed->value);
-                    $fupUpload = $this->calculateFUPSpeed(trim($upload));
+                    [$download, $upload] = explode('/', $currentSpeed->value);
                     $fupDownload = $this->calculateFUPSpeed(trim($download));
-                    
+                    $fupUpload = $this->calculateFUPSpeed(trim($upload));
+
                     return [
                         'attribute' => 'Mikrotik-Rate-Limit',
-                        'speed' => $fupUpload . '/' . $fupDownload
+                        'speed' => $fupDownload . '/' . $fupUpload
                     ];
                 }
                 return null;

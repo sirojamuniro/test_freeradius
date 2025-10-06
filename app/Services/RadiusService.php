@@ -3,14 +3,23 @@
 namespace App\Services;
 
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Symfony\Component\Process\Process;
 
 class RadiusService
 {
-    public function addUser($username, $password, $vendor, $ipAddress, $port, $secret, $bandwidthConfig = null)
-    {
-        $vendor = 'mikrotik';
+    public function addUser(
+        string $username,
+        string $password,
+        string $vendor,
+        string $ipAddress,
+        int $port,
+        string $secret,
+        ?array $bandwidthConfig = null
+    ) {
         $expireDate = Carbon::now()->addDays(30)->format('Y-m-d H:i:s');
         $fupLimit = 100 * 1024 * 1024 * 1024; // 100GB dalam bytes
 
@@ -21,36 +30,44 @@ class RadiusService
             'min_upload' => '2M',
         ];
 
-        $bandwidth = array_merge($defaultBandwidth, $bandwidthConfig ?? []);
+        $bandwidth = array_merge($defaultBandwidth, array_filter($bandwidthConfig ?? [], fn ($value) => ! is_null($value)));
         $config = $this->getBandwidthConfigs($vendor, $bandwidth);
 
         DB::beginTransaction();
+
         try {
-            // Insert/Update radcheck
             $this->createOrUpdateRadCheck($username, $password, $expireDate);
-
-            // Insert/Update radreply
             $this->createOrUpdateRadReply($username, $config, $fupLimit);
-
-            // Ensure NAS exists
-            $this->ensureNasExists($ipAddress, $port, $secret);
+            $this->syncNas([
+                'nasname' => $ipAddress,
+                'ports' => $port,
+                'secret' => $secret,
+                'shortname' => 'auto_'.str_replace('.', '_', $ipAddress),
+                'type' => $vendor,
+            ], false);
 
             DB::commit();
-            Log::info("User $username berhasil dibuat dengan vendor $vendor", [
+
+            Log::info("User {$username} berhasil dibuat dengan vendor {$vendor}", [
                 'username' => $username,
                 'vendor' => $vendor,
                 'bandwidth' => $bandwidth,
             ]);
 
-            return "User $username berhasil dibuat untuk $vendor!";
-        } catch (\Exception $e) {
-            DB::rollback();
-            Log::error("Gagal membuat user $username: ".$e->getMessage());
-            throw $e;
+            return "User {$username} berhasil dibuat untuk {$vendor}!";
+        } catch (\Throwable $exception) {
+            DB::rollBack();
+
+            Log::error("Gagal membuat user {$username}: ".$exception->getMessage(), [
+                'username' => $username,
+                'vendor' => $vendor,
+            ]);
+
+            throw $exception;
         }
     }
 
-    public function checkFUPAndApplyLimit()
+    public function checkFUPAndApplyLimit(): array
     {
         $fupLimit = 100 * 1024 * 1024 * 1024; // 100GB
 
@@ -62,19 +79,22 @@ class RadiusService
             ->get();
 
         $processedUsers = [];
+
         foreach ($users as $user) {
             try {
                 $result = $this->applyFUP($user->username);
+
                 $processedUsers[] = [
                     'username' => $user->username,
                     'usage' => round($user->total_usage / (1024 * 1024 * 1024), 2).' GB',
                     'status' => $result ? 'FUP Applied' : 'Failed',
                 ];
-            } catch (\Exception $e) {
-                Log::error("Error applying FUP for user {$user->username}: ".$e->getMessage());
+            } catch (\Throwable $exception) {
+                Log::error("Error applying FUP for user {$user->username}: ".$exception->getMessage());
+
                 $processedUsers[] = [
                     'username' => $user->username,
-                    'status' => 'Error: '.$e->getMessage(),
+                    'status' => 'Error: '.$exception->getMessage(),
                 ];
             }
         }
@@ -82,7 +102,169 @@ class RadiusService
         return $processedUsers;
     }
 
-    private function createOrUpdateRadCheck($username, $password, $expireDate)
+    public function syncNas(array $payload, bool $reload = true): array
+    {
+        $nasname = $payload['nasname'] ?? null;
+        $secret = $payload['secret'] ?? null;
+
+        if (! $nasname || ! $secret) {
+            throw new \InvalidArgumentException('NAS sync requires both nasname (IP address) and secret.');
+        }
+
+        $authPort = $payload['auth_port'] ?? null;
+        $acctPort = $payload['acct_port'] ?? null;
+
+        $data = [
+            'nasname' => $nasname,
+            'shortname' => $payload['shortname'] ?? $this->generateNasShortname($nasname, $payload['shortname'] ?? null),
+            'type' => $payload['type'] ?? 'other',
+            'ports' => (int) ($payload['ports'] ?? 3799),
+            'secret' => $secret,
+            'server' => $payload['server'] ?? '',
+            'community' => $payload['community'] ?? null,
+            'description' => $payload['description'] ?? null,
+        ];
+
+        $exists = DB::table('nas')->where('nasname', $nasname)->exists();
+
+        DB::table('nas')->updateOrInsert(['nasname' => $nasname], $data);
+
+        Log::info('NAS entry synchronised', [
+            'nasname' => $nasname,
+            'created' => ! $exists,
+            'ports' => $data['ports'],
+            'auth_port' => $authPort,
+            'acct_port' => $acctPort,
+        ]);
+
+        $result = [
+            'nasname' => $nasname,
+            'created' => ! $exists,
+            'ports' => $data['ports'],
+            'auth_port' => $authPort,
+            'acct_port' => $acctPort,
+        ];
+
+        if ($reload) {
+            $result['reload'] = $this->reloadFreeRadius();
+        }
+
+        return $result;
+    }
+
+    public function reloadFreeRadius(): array
+    {
+        $command = config('radius.reload_command', 'sudo systemctl reload freeradius');
+        $process = Process::fromShellCommandline($command);
+        $process->run();
+
+        $output = trim($process->getOutput());
+        $errorOutput = trim($process->getErrorOutput());
+
+        if (! $process->isSuccessful()) {
+            Log::error('FreeRADIUS reload failed', [
+                'command' => $command,
+                'error' => $errorOutput,
+            ]);
+
+            throw new \RuntimeException('FreeRADIUS reload failed: '.($errorOutput ?: 'Unknown error'));
+        }
+
+        Log::info('FreeRADIUS reloaded successfully', [
+            'command' => $command,
+            'output' => $output,
+        ]);
+
+        return [
+            'output' => $output,
+        ];
+    }
+
+    public function blockUser(string $username, bool $disconnect = true): array
+    {
+        DB::table('radcheck')->updateOrInsert(
+            ['username' => $username, 'attribute' => 'Auth-Type'],
+            ['op' => ':=', 'value' => 'Reject']
+        );
+
+        Log::info('Radius block applied for user', ['username' => $username]);
+
+        $result = ['blocked' => true];
+
+        if ($disconnect) {
+            $result['disconnect'] = $this->disconnectUser($username);
+        }
+
+        return $result;
+    }
+
+    public function unblockUser(string $username, bool $disconnect = true): array
+    {
+        $removed = DB::table('radcheck')
+            ->where('username', $username)
+            ->where('attribute', 'Auth-Type')
+            ->where('value', 'Reject')
+            ->delete();
+
+        Log::info('Radius unblock executed', ['username' => $username, 'removed' => $removed]);
+
+        $result = ['unblocked' => $removed > 0];
+
+        if ($disconnect) {
+            $result['disconnect'] = $this->disconnectUser($username);
+        }
+
+        return $result;
+    }
+
+    public function userIsBlocked(string $username): bool
+    {
+        return DB::table('radcheck')
+            ->where('username', $username)
+            ->where('attribute', 'Auth-Type')
+            ->where('value', 'Reject')
+            ->exists();
+    }
+
+    public function disconnectUser(string $username): array
+    {
+        $sessions = $this->getActiveSessionsWithNas($username);
+
+        if ($sessions->isEmpty()) {
+            return [
+                'success' => false,
+                'sessions' => [],
+                'message' => 'No active sessions',
+            ];
+        }
+
+        $details = [];
+        $success = true;
+
+        foreach ($sessions as $session) {
+            $commandResult = $this->runRadclientCommand(
+                $session->nasname,
+                $session->ports,
+                $session->secret,
+                $username,
+                [],
+                'disconnect'
+            );
+
+            $success = $success && $commandResult['success'];
+            $details[] = array_merge($commandResult, [
+                'nas' => $session->nasname,
+                'ports' => $session->ports,
+            ]);
+        }
+
+        return [
+            'success' => $success,
+            'sessions' => $details,
+        ];
+    }
+
+    private function createOrUpdateRadCheck(string $username, string $password, string $expireDate): void
     {
         $existingEntries = DB::table('radcheck')
             ->where('username', $username)
@@ -92,8 +274,13 @@ class RadiusService
 
         $inserts = [];
 
-        if (! in_array('Cleartext-Password', $existingEntries)) {
-            $inserts[] = ['username' => $username, 'attribute' => 'Cleartext-Password', 'op' => ':=', 'value' => $password];
+        if (! in_array('Cleartext-Password', $existingEntries, true)) {
+            $inserts[] = [
+                'username' => $username,
+                'attribute' => 'Cleartext-Password',
+                'op' => ':=',
+                'value' => $password,
+            ];
         } else {
             DB::table('radcheck')
                 ->where('username', $username)
@@ -101,8 +288,13 @@ class RadiusService
                 ->update(['value' => $password]);
         }
 
-        if (! in_array('Expiration', $existingEntries)) {
-            $inserts[] = ['username' => $username, 'attribute' => 'Expiration', 'op' => ':=', 'value' => $expireDate];
+        if (! in_array('Expiration', $existingEntries, true)) {
+            $inserts[] = [
+                'username' => $username,
+                'attribute' => 'Expiration',
+                'op' => ':=',
+                'value' => $expireDate,
+            ];
         } else {
             DB::table('radcheck')
                 ->where('username', $username)
@@ -115,7 +307,7 @@ class RadiusService
         }
     }
 
-    private function createOrUpdateRadReply($username, $config, $fupLimit)
+    private function createOrUpdateRadReply(string $username, array $config, int $fupLimit): void
     {
         $attributes = [
             'Vendor-Type' => [$config['vendor_type']],
@@ -142,17 +334,25 @@ class RadiusService
         $this->syncRadReplyAttributes($username, $attributes);
     }
 
-    private function applyFUP($username)
+    private function applyFUP(string $username): bool
     {
         $userData = DB::table('radreply')
             ->where('username', $username)
-            ->whereIn('attribute', ['Vendor-Type', 'Mikrotik-Rate-Limit', 'Cisco-AVPair', 'Juniper-AVPair', 'Huawei-Input-Peak-Rate', 'Huawei-Output-Peak-Rate'])
+            ->whereIn('attribute', [
+                'Vendor-Type',
+                'Mikrotik-Rate-Limit',
+                'Cisco-AVPair',
+                'Juniper-AVPair',
+                'Huawei-Input-Peak-Rate',
+                'Huawei-Output-Peak-Rate',
+            ])
             ->get()
             ->keyBy('attribute');
 
         $vendorData = $userData->get('Vendor-Type');
+
         if (! $vendorData) {
-            Log::warning("Vendor type tidak ditemukan untuk user: $username");
+            Log::warning("Vendor type tidak ditemukan untuk user: {$username}");
 
             return false;
         }
@@ -161,7 +361,7 @@ class RadiusService
         $fupConfig = $this->getFUPConfigFromUserData($vendorType, $userData);
 
         if (! $fupConfig) {
-            Log::warning("Tidak dapat menentukan konfigurasi FUP untuk user: $username");
+            Log::warning("Tidak dapat menentukan konfigurasi FUP untuk user: {$username}");
 
             return false;
         }
@@ -180,9 +380,7 @@ class RadiusService
                     ->where('attribute', $fupConfig['output_attr'])
                     ->update(['value' => $fupConfig['output_speed']]);
             } else {
-                // Handle Cisco/Juniper multiple speeds atau single speed untuk MikroTik
                 if (isset($fupConfig['speeds'])) {
-                    // Multiple speeds (Cisco/Juniper)
                     DB::table('radreply')
                         ->where('username', $username)
                         ->where('attribute', $fupConfig['attribute'])
@@ -197,7 +395,6 @@ class RadiusService
                         ]);
                     }
                 } else {
-                    // Single speed (MikroTik)
                     DB::table('radreply')
                         ->where('username', $username)
                         ->where('attribute', $fupConfig['attribute'])
@@ -206,73 +403,58 @@ class RadiusService
             }
 
             $nasData = $this->getNasForUser($username);
+
             if ($nasData) {
                 $this->sendCoA($username, $vendorType, $nasData->nasname, $nasData->ports, $nasData->secret, $fupConfig);
             }
 
             DB::commit();
-            Log::info("FUP berhasil diterapkan untuk user: $username dengan vendor: $vendorType");
+
+            Log::info("FUP berhasil diterapkan untuk user: {$username} dengan vendor: {$vendorType}");
 
             return true;
-        } catch (\Exception $e) {
-            DB::rollback();
-            Log::error("Error menerapkan FUP untuk user $username: ".$e->getMessage());
+        } catch (\Throwable $exception) {
+            DB::rollBack();
+
+            Log::error("Error menerapkan FUP untuk user {$username}: ".$exception->getMessage());
 
             return false;
         }
     }
 
-    private function sendCoA($username, $vendorType, $ipAddress, $port, $secret, $config)
-    {
-        $username = escapeshellarg($username);
-        $ipAddress = escapeshellarg($ipAddress);
-        $port = escapeshellarg($port);
-        $secret = escapeshellarg($secret);
-
-        $command = match ($vendorType) {
-            'mikrotik' => "echo \"User-Name=$username,Mikrotik-Rate-Limit={$config['speed']}\" | radclient -x $ipAddress:$port coa $secret",
-            'cisco' => isset($config['speeds'])
-                ? "echo \"User-Name=$username,".implode(',', array_map(fn ($s) => "Cisco-AVPair='$s'", $config['speeds']))."\" | radclient -x $ipAddress:$port coa $secret"
-                : "echo \"User-Name=$username,Cisco-AVPair='{$config['speed']}'\" | radclient -x $ipAddress:$port coa $secret",
-            'juniper' => isset($config['speeds'])
-                ? "echo \"User-Name=$username,".implode(',', array_map(fn ($s) => "Juniper-AVPair='$s'", $config['speeds']))."\" | radclient -x $ipAddress:$port coa $secret"
-                : "echo \"User-Name=$username,Juniper-AVPair='{$config['speed']}'\" | radclient -x $ipAddress:$port coa $secret",
-            'huawei' => "echo \"User-Name=$username,Huawei-Input-Peak-Rate={$config['input_speed']},Huawei-Output-Peak-Rate={$config['output_speed']}\" | radclient -x $ipAddress:$port coa $secret",
-            default => throw new \Exception("Vendor '$vendorType' tidak didukung untuk CoA."),
+    private function sendCoA(
+        string $username,
+        string $vendorType,
+        string $ipAddress,
+        ?int $port,
+        string $secret,
+        array $config
+    ): bool {
+        $attributes = match ($vendorType) {
+            'mikrotik' => ['Mikrotik-Rate-Limit' => [$config['speed']]],
+            'cisco' => ['Cisco-AVPair' => $config['speeds'] ?? [$config['speed'] ?? null]],
+            'juniper' => ['Juniper-AVPair' => $config['speeds'] ?? [$config['speed'] ?? null]],
+            'huawei' => [
+                'Huawei-Input-Peak-Rate' => [$config['input_speed']],
+                'Huawei-Output-Peak-Rate' => [$config['output_speed']],
+            ],
+            default => throw new \InvalidArgumentException("Vendor '{$vendorType}' tidak didukung untuk CoA."),
         };
 
-        Log::info("Executing CoA command for user $username: $command");
-        $output = shell_exec($command);
-        Log::info("CoA Command Output for $username: \n$output");
+        $commandResult = $this->runRadclientCommand($ipAddress, $port, $secret, $username, $attributes, 'coa');
 
-        return ! empty($output);
-    }
+        if (! $commandResult['success']) {
+            Log::error('CoA command failed', array_merge($commandResult, ['username' => $username]));
 
-    private function ensureNasExists($ipAddress, $port, $secret)
-    {
-        $exists = DB::table('nas')->where('nasname', $ipAddress)->exists();
-        if (! $exists) {
-            DB::table('nas')->insert([
-                'nasname' => $ipAddress,
-                'shortname' => 'auto_'.str_replace('.', '_', $ipAddress),
-                'ports' => $port,
-                'secret' => $secret,
-                'type' => 'other',
-                'server' => '',
-            ]);
-            Log::info("NAS entry created for $ipAddress:$port");
-        } else {
-            // Update existing NAS if needed
-            DB::table('nas')
-                ->where('nasname', $ipAddress)
-                ->update([
-                    'ports' => $port,
-                    'secret' => $secret,
-                ]);
+            return false;
         }
+
+        Log::info('CoA command executed successfully', array_merge($commandResult, ['username' => $username]));
+
+        return true;
     }
 
-    private function getNasForUser($username)
+    private function getNasForUser(string $username): ?object
     {
         return DB::table('radacct')
             ->join('nas', 'radacct.nasipaddress', '=', 'nas.nasname')
@@ -282,7 +464,7 @@ class RadiusService
             ->first();
     }
 
-    private function getBandwidthConfigs($vendor, $bandwidth)
+    private function getBandwidthConfigs(string $vendor, array $bandwidth): array
     {
         return match ($vendor) {
             'mikrotik', 'mikrotik_pppoe', 'mikrotik_hotspot' => [
@@ -316,7 +498,7 @@ class RadiusService
                 'attribute_output' => 'Huawei-Output-Peak-Rate',
                 'vendor_type' => 'huawei',
             ],
-            default => throw new \Exception("Vendor '$vendor' tidak didukung")
+            default => throw new \RuntimeException("Vendor '{$vendor}' tidak didukung"),
         };
     }
 
@@ -356,9 +538,7 @@ class RadiusService
                         'attribute' => $attribute,
                         'value' => $value,
                     ],
-                    [
-                        'op' => ':=',
-                    ]
+                    ['op' => ':=']
                 );
             }
         }
@@ -379,7 +559,7 @@ class RadiusService
         ];
     }
 
-    private function convertToBytes($speed)
+    private function convertToBytes(string $speed): string
     {
         $speed = strtoupper(trim($speed));
         $multipliers = ['K' => 1000, 'M' => 1000000, 'G' => 1000000000];
@@ -393,16 +573,17 @@ class RadiusService
         return (string) (int) $speed;
     }
 
-    private function getFUPConfigFromUserData($vendorType, $userData)
+    private function getFUPConfigFromUserData(string $vendorType, Collection $userData): ?array
     {
         switch ($vendorType) {
             case 'mikrotik':
                 $currentSpeed = $userData->get('Mikrotik-Rate-Limit');
+
                 if (! $currentSpeed) {
                     return null;
                 }
 
-                if (strpos($currentSpeed->value, '/') !== false) {
+                if (str_contains($currentSpeed->value, '/')) {
                     [$download, $upload] = explode('/', $currentSpeed->value);
                     $fupDownload = $this->calculateFUPSpeed(trim($download));
                     $fupUpload = $this->calculateFUPSpeed(trim($upload));
@@ -417,11 +598,13 @@ class RadiusService
 
             case 'cisco':
                 $speeds = $userData->where('attribute', 'Cisco-AVPair');
+
                 if ($speeds->isEmpty()) {
                     return null;
                 }
 
                 $fupSpeeds = [];
+
                 foreach ($speeds as $speed) {
                     if (preg_match('/ip:sub-qos-policy-(in|out)=(\w+)/', $speed->value, $matches)) {
                         $direction = $matches[1];
@@ -438,11 +621,13 @@ class RadiusService
 
             case 'juniper':
                 $speeds = $userData->where('attribute', 'Juniper-AVPair');
+
                 if ($speeds->isEmpty()) {
                     return null;
                 }
 
                 $fupSpeeds = [];
+
                 foreach ($speeds as $speed) {
                     if (preg_match('/logical-system-policer-template-(in|out)=(\w+)/', $speed->value, $matches)) {
                         $direction = $matches[1];
@@ -465,7 +650,7 @@ class RadiusService
                     return null;
                 }
 
-                $fupInput = (int) ((int) $inputSpeed->value * 0.2); // 20% dari kecepatan asli
+                $fupInput = (int) ((int) $inputSpeed->value * 0.2);
                 $fupOutput = (int) ((int) $outputSpeed->value * 0.2);
 
                 return [
@@ -480,35 +665,90 @@ class RadiusService
         }
     }
 
-    private function calculateFUPSpeed($originalSpeed)
+    private function calculateFUPSpeed(string $originalSpeed): string
     {
         $speed = strtoupper(trim($originalSpeed));
 
         if (preg_match('/^(\d+(?:\.\d+)?)([KMG])$/', $speed, $matches)) {
             $value = (float) $matches[1];
             $unit = $matches[2];
+            $fupValue = $value * 0.2;
 
-            $fupValue = $value * 0.2; // 20% dari kecepatan asli
-
-            // Minimum 1K untuk mencegah 0 bandwidth
             if ($fupValue < 1) {
                 if ($unit === 'M') {
                     $fupValue = max(1, (int) ($fupValue * 1000));
 
                     return $fupValue.'K';
-                } elseif ($unit === 'G') {
+                }
+
+                if ($unit === 'G') {
                     $fupValue = max(1, (int) ($fupValue * 1000));
 
                     return $fupValue.'M';
                 }
 
-                return '1K'; // Fallback minimum
+                return '1K';
             }
 
             return (int) $fupValue.$unit;
         }
 
-        // Fallback jika parsing gagal
         return '1M';
+    }
+
+    private function generateNasShortname(string $nasname, ?string $customShortname = null): string
+    {
+        if ($customShortname) {
+            return $customShortname;
+        }
+
+        $sanitised = preg_replace('/[^A-Za-z0-9]+/', '_', $nasname);
+
+        return 'auto_'.Str::lower(trim($sanitised, '_'));
+    }
+
+    private function getActiveSessionsWithNas(string $username): Collection
+    {
+        return DB::table('radacct')
+            ->join('nas', 'radacct.nasipaddress', '=', 'nas.nasname')
+            ->where('radacct.username', $username)
+            ->whereNull('radacct.acctstoptime')
+            ->select('nas.nasname', 'nas.ports', 'nas.secret')
+            ->get();
+    }
+
+    private function runRadclientCommand(
+        string $ipAddress,
+        ?int $port,
+        string $secret,
+        string $username,
+        array $attributes,
+        string $command
+    ): array {
+        $port ??= 3799;
+        $inputLines = ["User-Name={$username}"];
+
+        foreach ($attributes as $attribute => $values) {
+            foreach (array_filter((array) $values) as $value) {
+                $inputLines[] = "{$attribute}={$value}";
+            }
+        }
+
+        $process = Process::fromShellCommandline(sprintf('radclient -x %s:%s %s %s', $ipAddress, $port, $command, $secret));
+        $process->setInput(implode("\n", $inputLines)."\n");
+        $process->run();
+
+        $output = trim($process->getOutput());
+        $errorOutput = trim($process->getErrorOutput());
+        $success = $process->isSuccessful();
+
+        return [
+            'success' => $success,
+            'output' => $output,
+            'error' => $errorOutput,
+            'ip' => $ipAddress,
+            'port' => $port,
+            'command' => sprintf('radclient -x %s:%s %s ****', $ipAddress, $port, $command),
+        ];
     }
 }

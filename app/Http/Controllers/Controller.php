@@ -8,6 +8,7 @@ use Illuminate\Foundation\Bus\DispatchesJobs;
 use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller as BaseController;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 
 class Controller extends BaseController
@@ -75,6 +76,149 @@ class Controller extends BaseController
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function syncNas(Request $request)
+    {
+        $validated = $request->validate([
+            'nasname' => 'required|string',
+            'secret' => 'required|string|min:4',
+            'ports' => 'nullable|integer|min:1|max:65535',
+            'shortname' => 'nullable|string',
+            'type' => 'nullable|string',
+            'server' => 'nullable|string',
+            'community' => 'nullable|string',
+            'description' => 'nullable|string',
+            'auth_port' => 'nullable|integer|min:1|max:65535',
+            'acct_port' => 'nullable|integer|min:1|max:65535',
+            'reload' => 'nullable|boolean',
+        ]);
+
+        try {
+            $payload = Arr::except($validated, ['reload']);
+            $result = $this->radiusService->syncNas($payload, (bool) ($validated['reload'] ?? true));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'NAS synchronised successfully',
+                'data' => $result,
+            ], 200);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to sync NAS', [
+                'payload' => $validated,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function reloadRadius()
+    {
+        try {
+            $result = $this->radiusService->reloadFreeRadius();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'FreeRADIUS reloaded successfully',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::error('FreeRADIUS reload failed via API', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function blockUser(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string',
+            'disconnect' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $this->radiusService->blockUser($validated['username'], (bool) ($validated['disconnect'] ?? true));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User blocked successfully',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to block user on FreeRADIUS', [
+                'username' => $validated['username'],
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function unblockUser(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string',
+            'disconnect' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $this->radiusService->unblockUser($validated['username'], (bool) ($validated['disconnect'] ?? true));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User unblocked successfully',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to unblock user on FreeRADIUS', [
+                'username' => $validated['username'],
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function disconnectUserSessions(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string',
+        ]);
+
+        try {
+            $result = $this->radiusService->disconnectUser($validated['username']);
+
+            return response()->json([
+                'success' => $result['success'],
+                'message' => $result['success'] ? 'Disconnect command executed' : 'No active sessions to disconnect',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to disconnect user sessions', [
+                'username' => $validated['username'],
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
             ], 500);
         }
     }

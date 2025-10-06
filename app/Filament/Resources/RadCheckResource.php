@@ -3,8 +3,8 @@
 namespace App\Filament\Resources;
 
 use App\Filament\Resources\RadCheckResource\Pages;
-use App\Models\Nas;
 use App\Models\RadCheck;
+use App\Services\RadiusService;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Form;
 use Filament\Resources\Resource;
@@ -44,9 +44,9 @@ class RadCheckResource extends Resource
             ->actions([
                 Tables\Actions\EditAction::make(),
                 Action::make('block')
-                    ->label(fn ($record) => $record->attribute === 'Auth-Type' && $record->value === 'Reject' ? 'Unblock' : 'Block')
-                    ->icon(fn ($record) => $record->attribute === 'Auth-Type' && $record->value === 'Reject' ? 'heroicon-o-check-circle' : 'heroicon-o-ban')
-                    ->color(fn ($record) => $record->attribute === 'Auth-Type' && $record->value === 'Reject' ? 'success' : 'danger')
+                    ->label(fn ($record) => self::userIsBlocked($record->username) ? 'Unblock' : 'Block')
+                    ->icon(fn ($record) => self::userIsBlocked($record->username) ? 'heroicon-o-check-circle' : 'heroicon-o-ban')
+                    ->color(fn ($record) => self::userIsBlocked($record->username) ? 'success' : 'danger')
                     ->action(fn ($record) => self::toggleBlockUser($record)),
             ])
             ->bulkActions([
@@ -70,37 +70,33 @@ class RadCheckResource extends Resource
         ];
     }
 
-    protected static function toggleBlockUser($record)
+    protected static function toggleBlockUser($record): void
     {
-        $checkNas = Nas::where('username', $record->username)->firstOrFail();
-        $ipAddress = $checkNas->nasname;
-        $port = $checkNas->ports;
-        $secret = $checkNas->secret;
-        $isBlocked = $record->attribute === 'Auth-Type' && $record->value === 'Reject';
+        $username = $record->username;
 
-        if ($isBlocked) {
-            // Jika user sedang diblokir, hapus blokirnya
-            RadCheck::where('username', $record->username)
-                ->where('attribute', 'Auth-Type')
-                ->where('value', 'Reject')
-                ->delete();
-            $command = "echo \"User-Name={$record->username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-
-            // Menjalankan perintah menggunakan shell_exec atau exec
-            $output = shell_exec($command);
-        } else {
-            // Jika user belum diblokir, tambahkan aturan untuk memblokir
-            RadCheck::create([
-                'username' => $record->username,
-                'username' => $record->username,
-                'attribute' => 'Auth-Type',
-                'op' => ':=',
-                'value' => 'Reject',
-            ]);
-            $command = "echo \"User-Name={$record->username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-
-            // Menjalankan perintah menggunakan shell_exec atau exec
-            $output = shell_exec($command);
+        if (! $username) {
+            return;
         }
+
+        /** @var RadiusService $service */
+        $service = app(RadiusService::class);
+
+        if ($service->userIsBlocked($username)) {
+            $service->unblockUser($username);
+        } else {
+            $service->blockUser($username);
+        }
+    }
+
+    protected static function userIsBlocked(?string $username): bool
+    {
+        if (! $username) {
+            return false;
+        }
+
+        /** @var RadiusService $service */
+        $service = app(RadiusService::class);
+
+        return $service->userIsBlocked($username);
     }
 }

@@ -14,4 +14,9 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::post('customer', [Controller::class, 'activateUser'])->name('activateUser');
+Route::post('customer', [Controller::class, 'activateUser'])->name('radius.customer.activate');
+Route::post('nas/sync', [Controller::class, 'syncNas'])->name('radius.nas.sync');
+Route::post('radius/reload', [Controller::class, 'reloadRadius'])->name('radius.reload');
+Route::post('radius/block', [Controller::class, 'blockUser'])->name('radius.block');
+Route::post('radius/unblock', [Controller::class, 'unblockUser'])->name('radius.unblock');
+Route::post('radius/disconnect', [Controller::class, 'disconnectUserSessions'])->name('radius.disconnect');

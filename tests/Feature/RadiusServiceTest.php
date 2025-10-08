@@ -63,10 +63,11 @@ class RadiusServiceTest extends TestCase
             'min_upload' => '2M',
         ]);
 
-        $this->assertSame(4, DB::table('radreply')->where('username', 'alice')->count());
-        $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Vendor-Type')->count());
-        $this->assertSame('mikrotik', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Vendor-Type')->value('value'));
+        $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->count());
         $this->assertSame('20M/5M', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Rate-Limit')->value('value'));
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Vendor-Type')->count());
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Total-Limit')->count());
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Session-Timeout')->count());
 
         $service->addUser('alice', 'newpass456', 'mikrotik', '192.168.1.1', 3799, 'coasecret', [
             'max_download' => '30M',
@@ -75,11 +76,11 @@ class RadiusServiceTest extends TestCase
             'min_upload' => '1M',
         ]);
 
-        $this->assertSame(4, DB::table('radreply')->where('username', 'alice')->count());
-        $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Vendor-Type')->count());
+        $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->count());
         $this->assertSame('30M/10M', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Rate-Limit')->value('value'));
-        $this->assertSame('107374182400', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Total-Limit')->value('value'));
-        $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Session-Timeout')->count());
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Vendor-Type')->count());
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Total-Limit')->count());
+        $this->assertSame(0, DB::table('radreply')->where('username', 'alice')->where('attribute', 'Session-Timeout')->count());
 
         $this->assertSame(1, DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Cleartext-Password')->count());
         $this->assertSame('newpass456', DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Cleartext-Password')->value('value'));

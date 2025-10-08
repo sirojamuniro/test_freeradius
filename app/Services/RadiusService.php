@@ -309,26 +309,28 @@ class RadiusService
 
     private function createOrUpdateRadReply(string $username, array $config, int $fupLimit): void
     {
-        $attributes = [
-            'Vendor-Type' => [$config['vendor_type']],
-        ];
+        DB::table('radreply')
+            ->where('username', $username)
+            ->whereIn('attribute', [
+                'Vendor-Type',
+                'Mikrotik-Total-Limit',
+                'Session-Timeout',
+            ])
+            ->delete();
+
+        $attributes = [];
 
         if ($config['vendor_type'] === 'huawei') {
             $attributes[$config['attribute_input']] = [(string) $config['input_speed']];
             $attributes[$config['attribute_output']] = [(string) $config['output_speed']];
             $attributes['Huawei-Volume-Limit'] = [(string) $fupLimit];
-        } else {
-            $attributes['Session-Timeout'] = ['86400'];
-
-            if ($config['vendor_type'] === 'mikrotik') {
-                $attributes[$config['attribute']] = [$config['initial_speed']];
-                $attributes['Mikrotik-Total-Limit'] = [(string) $fupLimit];
-            } elseif (in_array($config['vendor_type'], ['cisco', 'juniper'], true)) {
-                $attributes[$config['attribute']] = [
-                    $config['initial_speed_in'],
-                    $config['initial_speed_out'],
-                ];
-            }
+        } elseif ($config['vendor_type'] === 'mikrotik') {
+            $attributes[$config['attribute']] = [$config['initial_speed']];
+        } elseif (in_array($config['vendor_type'], ['cisco', 'juniper'], true)) {
+            $attributes[$config['attribute']] = [
+                $config['initial_speed_in'],
+                $config['initial_speed_out'],
+            ];
         }
 
         $this->syncRadReplyAttributes($username, $attributes);
@@ -339,25 +341,22 @@ class RadiusService
         $userData = DB::table('radreply')
             ->where('username', $username)
             ->whereIn('attribute', [
-                'Vendor-Type',
                 'Mikrotik-Rate-Limit',
                 'Cisco-AVPair',
                 'Juniper-AVPair',
                 'Huawei-Input-Peak-Rate',
                 'Huawei-Output-Peak-Rate',
             ])
-            ->get()
-            ->keyBy('attribute');
+            ->get();
 
-        $vendorData = $userData->get('Vendor-Type');
+        $vendorType = $this->detectVendorTypeFromRadReply($userData);
 
-        if (! $vendorData) {
-            Log::warning("Vendor type tidak ditemukan untuk user: {$username}");
+        if (! $vendorType) {
+            Log::warning("Vendor type tidak dapat ditentukan untuk user: {$username}");
 
             return false;
         }
 
-        $vendorType = $vendorData->value;
         $fupConfig = $this->getFUPConfigFromUserData($vendorType, $userData);
 
         if (! $fupConfig) {
@@ -547,10 +546,7 @@ class RadiusService
     private function managedRadReplyAttributes(): array
     {
         return [
-            'Vendor-Type',
-            'Session-Timeout',
             'Mikrotik-Rate-Limit',
-            'Mikrotik-Total-Limit',
             'Cisco-AVPair',
             'Juniper-AVPair',
             'Huawei-Input-Peak-Rate',
@@ -573,11 +569,33 @@ class RadiusService
         return (string) (int) $speed;
     }
 
+    private function detectVendorTypeFromRadReply(Collection $userData): ?string
+    {
+        if ($userData->firstWhere('attribute', 'Mikrotik-Rate-Limit')) {
+            return 'mikrotik';
+        }
+
+        if ($userData->firstWhere('attribute', 'Cisco-AVPair')) {
+            return 'cisco';
+        }
+
+        if ($userData->firstWhere('attribute', 'Juniper-AVPair')) {
+            return 'juniper';
+        }
+
+        if ($userData->firstWhere('attribute', 'Huawei-Input-Peak-Rate')
+            || $userData->firstWhere('attribute', 'Huawei-Output-Peak-Rate')) {
+            return 'huawei';
+        }
+
+        return null;
+    }
+
     private function getFUPConfigFromUserData(string $vendorType, Collection $userData): ?array
     {
         switch ($vendorType) {
             case 'mikrotik':
-                $currentSpeed = $userData->get('Mikrotik-Rate-Limit');
+                $currentSpeed = $userData->firstWhere('attribute', 'Mikrotik-Rate-Limit');
 
                 if (! $currentSpeed) {
                     return null;
@@ -643,8 +661,8 @@ class RadiusService
                 ] : null;
 
             case 'huawei':
-                $inputSpeed = $userData->get('Huawei-Input-Peak-Rate');
-                $outputSpeed = $userData->get('Huawei-Output-Peak-Rate');
+                $inputSpeed = $userData->firstWhere('attribute', 'Huawei-Input-Peak-Rate');
+                $outputSpeed = $userData->firstWhere('attribute', 'Huawei-Output-Peak-Rate');
 
                 if (! $inputSpeed || ! $outputSpeed) {
                     return null;

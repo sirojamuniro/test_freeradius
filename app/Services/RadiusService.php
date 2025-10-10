@@ -49,10 +49,13 @@ class RadiusService
 
             DB::commit();
 
+            $coaRefresh = $this->refreshActiveSessionsBandwidth($username, $config);
+
             Log::info("User {$username} berhasil dibuat dengan vendor {$vendor}", [
                 'username' => $username,
                 'vendor' => $vendor,
                 'bandwidth' => $bandwidth,
+                'coa_refresh' => $coaRefresh,
             ]);
 
             return "User {$username} berhasil dibuat untuk {$vendor}!";
@@ -98,6 +101,65 @@ class RadiusService
         }
 
         return Carbon::now($timezone)->addDays(30)->format('M d Y H:i:s');
+    }
+
+    private function refreshActiveSessionsBandwidth(string $username, array $config): ?array
+    {
+        if (! isset($config['vendor_type'])) {
+            return null;
+        }
+
+        $sessions = $this->getActiveSessionsWithNas($username);
+
+        if ($sessions->isEmpty()) {
+            return null;
+        }
+
+        $payload = $this->buildCoaPayloadFromConfig($config);
+
+        if (! $payload) {
+            return null;
+        }
+
+        $results = [];
+
+        foreach ($sessions as $session) {
+            $success = $this->sendCoA(
+                $username,
+                $config['vendor_type'],
+                $session->nasname,
+                $session->ports,
+                $session->secret,
+                $payload
+            );
+
+            $results[] = [
+                'nas' => $session->nasname,
+                'port' => $session->ports,
+                'success' => $success,
+            ];
+        }
+
+        return $results;
+    }
+
+    private function buildCoaPayloadFromConfig(array $config): ?array
+    {
+        return match ($config['vendor_type'] ?? null) {
+            'mikrotik' => isset($config['initial_speed'])
+                ? ['speed' => $config['initial_speed']]
+                : null,
+            'cisco', 'juniper' => (isset($config['initial_speed_in'], $config['initial_speed_out']))
+                ? ['speeds' => [$config['initial_speed_in'], $config['initial_speed_out']]]
+                : null,
+            'huawei' => (isset($config['input_speed'], $config['output_speed']))
+                ? [
+                    'input_speed' => $config['input_speed'],
+                    'output_speed' => $config['output_speed'],
+                ]
+                : null,
+            default => null,
+        };
     }
 
     public function checkFUPAndApplyLimit(): array
@@ -225,6 +287,7 @@ class RadiusService
         $result = ['blocked' => true];
 
         if ($disconnect) {
+            $result['coa'] = $this->sendCoaDisconnect($username);
             $result['disconnect'] = $this->disconnectUser($username);
         }
 
@@ -244,6 +307,7 @@ class RadiusService
         $result = ['unblocked' => $removed > 0];
 
         if ($disconnect) {
+            $result['coa'] = $this->sendCoaDisconnect($username);
             $result['disconnect'] = $this->disconnectUser($username);
         }
 
@@ -288,6 +352,62 @@ class RadiusService
             $details[] = array_merge($commandResult, [
                 'nas' => $session->nasname,
                 'ports' => $session->ports,
+                'acct_session_id' => $session->acct_session_id,
+                'framed_ip' => $session->framed_ip_address,
+            ]);
+        }
+
+        return [
+            'success' => $success,
+            'sessions' => $details,
+        ];
+    }
+
+    private function sendCoaDisconnect(string $username): array
+    {
+        $sessions = $this->getActiveSessionsWithNas($username);
+
+        if ($sessions->isEmpty()) {
+            return [
+                'success' => false,
+                'sessions' => [],
+                'message' => 'No active sessions',
+            ];
+        }
+
+        $details = [];
+        $success = true;
+
+        foreach ($sessions as $session) {
+            $attributes = [];
+
+            if (! empty($session->acct_session_id)) {
+                $attributes['Acct-Session-Id'] = [$session->acct_session_id];
+            }
+
+            if (! empty($session->framed_ip_address)) {
+                $attributes['Framed-IP-Address'] = [$session->framed_ip_address];
+            }
+
+            if (! empty($session->calling_station_id)) {
+                $attributes['Calling-Station-Id'] = [$session->calling_station_id];
+            }
+
+            $commandResult = $this->runRadclientCommand(
+                $session->nasname,
+                $session->ports,
+                $session->secret,
+                $username,
+                $attributes,
+                'coa'
+            );
+
+            $success = $success && $commandResult['success'];
+            $details[] = array_merge($commandResult, [
+                'nas' => $session->nasname,
+                'ports' => $session->ports,
+                'acct_session_id' => $session->acct_session_id,
+                'framed_ip' => $session->framed_ip_address,
             ]);
         }
 
@@ -764,7 +884,14 @@ class RadiusService
             ->join('nas', 'radacct.nasipaddress', '=', 'nas.nasname')
             ->where('radacct.username', $username)
             ->whereNull('radacct.acctstoptime')
-            ->select('nas.nasname', 'nas.ports', 'nas.secret')
+            ->select(
+                'nas.nasname',
+                'nas.ports',
+                'nas.secret',
+                'radacct.acctsessionid as acct_session_id',
+                'radacct.framedipaddress as framed_ip_address',
+                'radacct.callingstationid as calling_station_id'
+            )
             ->get();
     }
 

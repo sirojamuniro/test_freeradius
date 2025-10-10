@@ -24,6 +24,7 @@ class RadiusServiceTest extends TestCase
         Schema::dropIfExists('radcheck');
         Schema::dropIfExists('radreply');
         Schema::dropIfExists('nas');
+        Schema::dropIfExists('radacct');
 
         Schema::create('radcheck', function (Blueprint $table) {
             $table->id();
@@ -49,6 +50,18 @@ class RadiusServiceTest extends TestCase
             $table->string('secret');
             $table->string('type')->nullable();
             $table->string('server')->nullable();
+            $table->string('community')->nullable();
+            $table->string('description')->nullable();
+        });
+
+        Schema::create('radacct', function (Blueprint $table) {
+            $table->id();
+            $table->string('username');
+            $table->string('nasipaddress')->nullable();
+            $table->string('acctsessionid')->nullable();
+            $table->dateTime('acctstoptime')->nullable();
+            $table->string('framedipaddress')->nullable();
+            $table->string('callingstationid')->nullable();
         });
     }
 
@@ -88,5 +101,28 @@ class RadiusServiceTest extends TestCase
         $this->assertSame('Nov 10 2025 10:00:00', DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Expiration')->value('value'));
 
         $this->assertSame(1, DB::table('nas')->count());
+    }
+
+    public function test_block_and_unblock_user_apply_auth_type_and_disconnect_flow(): void
+    {
+        $service = app(RadiusService::class);
+
+        $blockResult = $service->blockUser('alice', true);
+
+        $this->assertTrue($blockResult['blocked']);
+        $this->assertArrayHasKey('coa', $blockResult);
+        $this->assertFalse($blockResult['coa']['success']);
+        $this->assertArrayHasKey('disconnect', $blockResult);
+        $this->assertFalse($blockResult['disconnect']['success']);
+        $this->assertSame(1, DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Auth-Type')->count());
+
+        $unblockResult = $service->unblockUser('alice', true);
+
+        $this->assertTrue($unblockResult['unblocked']);
+        $this->assertArrayHasKey('coa', $unblockResult);
+        $this->assertFalse($unblockResult['coa']['success']);
+        $this->assertArrayHasKey('disconnect', $unblockResult);
+        $this->assertFalse($unblockResult['disconnect']['success']);
+        $this->assertSame(0, DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Auth-Type')->count());
     }
 }

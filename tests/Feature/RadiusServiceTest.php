@@ -61,7 +61,7 @@ class RadiusServiceTest extends TestCase
             'max_upload' => '5M',
             'min_download' => '3M',
             'min_upload' => '2M',
-        ]);
+        ], 'Nov 05 2025 09:50:39');
 
         $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->count());
         $this->assertSame('20M/5M', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Rate-Limit')->value('value'));
@@ -74,7 +74,7 @@ class RadiusServiceTest extends TestCase
             'max_upload' => '10M',
             'min_download' => '4M',
             'min_upload' => '1M',
-        ]);
+        ], 'Nov 10 2025 10:00:00');
 
         $this->assertSame(1, DB::table('radreply')->where('username', 'alice')->count());
         $this->assertSame('30M/10M', DB::table('radreply')->where('username', 'alice')->where('attribute', 'Mikrotik-Rate-Limit')->value('value'));
@@ -84,6 +84,8 @@ class RadiusServiceTest extends TestCase
 
         $this->assertSame(1, DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Cleartext-Password')->count());
         $this->assertSame('newpass456', DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Cleartext-Password')->value('value'));
+        $this->assertSame(1, DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Expiration')->count());
+        $this->assertSame('Nov 10 2025 10:00:00', DB::table('radcheck')->where('username', 'alice')->where('attribute', 'Expiration')->value('value'));
 
         $this->assertSame(1, DB::table('nas')->count());
     }

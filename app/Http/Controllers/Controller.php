@@ -35,6 +35,7 @@ class Controller extends BaseController
             'max_upload' => 'required|string',
             'min_download' => 'nullable|string',
             'min_upload' => 'nullable|string',
+            'expiration' => 'nullable|string',
         ]);
 
         try {
@@ -50,7 +51,8 @@ class Controller extends BaseController
                     'max_upload' => $request->max_upload,
                     'min_download' => $request->min_download ?? '1M',
                     'min_upload' => $request->min_upload ?? '1M',
-                ]
+                ],
+                $request->expiration
             );
 
             return response()->json([
@@ -64,6 +66,7 @@ class Controller extends BaseController
                         'upload' => $request->max_upload,
                     ],
                     'nas' => $request->ipAddress.':'.$request->port,
+                    'expiration' => $request->expiration,
                 ],
             ], 201);
         } catch (\Exception $e) {

@@ -18,9 +18,10 @@ class RadiusService
         string $ipAddress,
         int $port,
         string $secret,
-        ?array $bandwidthConfig = null
+        ?array $bandwidthConfig = null,
+        ?string $expiration = null
     ) {
-        $expireDate = Carbon::now()->addDays(30)->format('Y-m-d H:i:s');
+        $expireDate = $this->resolveExpireDate($expiration);
         $fupLimit = 100 * 1024 * 1024 * 1024; // 100GB dalam bytes
 
         $defaultBandwidth = [
@@ -65,6 +66,38 @@ class RadiusService
 
             throw $exception;
         }
+    }
+
+    private function resolveExpireDate(?string $expiration): string
+    {
+        $timezone = config('app.timezone', 'UTC');
+
+        if ($expiration) {
+            $formats = ['M d Y H:i:s', 'd M Y H:i:s', 'Y-m-d H:i:s'];
+
+            foreach ($formats as $format) {
+                try {
+                    $parsed = Carbon::createFromFormat($format, $expiration, $timezone);
+
+                    return $parsed->setTimezone($timezone)->format('M d Y H:i:s');
+                } catch (\Throwable $exception) {
+                    // Try next format
+                }
+            }
+
+            try {
+                return Carbon::parse($expiration, $timezone)
+                    ->setTimezone($timezone)
+                    ->format('M d Y H:i:s');
+            } catch (\Throwable $exception) {
+                Log::warning('Unable to parse provided expiration, falling back to default interval', [
+                    'expiration' => $expiration,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        return Carbon::now($timezone)->addDays(30)->format('M d Y H:i:s');
     }
 
     public function checkFUPAndApplyLimit(): array

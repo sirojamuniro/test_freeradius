@@ -71,6 +71,76 @@ class RadiusService
         }
     }
 
+    public function updateUser(string $username, array $payload): array
+    {
+        $defaultBandwidth = [
+            'max_download' => '10M',
+            'max_upload' => '10M',
+            'min_download' => '2M',
+            'min_upload' => '2M',
+        ];
+
+        $bandwidthOverrides = array_filter([
+            'max_download' => $payload['max_download'] ?? null,
+            'max_upload' => $payload['max_upload'] ?? null,
+            'min_download' => $payload['min_download'] ?? null,
+            'min_upload' => $payload['min_upload'] ?? null,
+        ], fn ($value) => ! is_null($value));
+
+        $bandwidth = array_merge($defaultBandwidth, $bandwidthOverrides);
+        $vendor = $payload['vendor'];
+        $expireDate = $this->resolveExpireDate($payload['expiration'] ?? null);
+        $fupLimit = 100 * 1024 * 1024 * 1024; // 100GB dalam bytes
+        $config = $this->getBandwidthConfigs($vendor, $bandwidth);
+
+        DB::beginTransaction();
+
+        try {
+            $this->createOrUpdateRadCheck($username, $payload['password'], $expireDate);
+            $this->createOrUpdateRadReply($username, $config, $fupLimit);
+
+            $this->syncNas([
+                'nasname' => $payload['ipAddress'],
+                'ports' => (int) $payload['port'],
+                'secret' => $payload['secret'],
+                'shortname' => 'auto_'.str_replace('.', '_', $payload['ipAddress']),
+                'type' => $vendor,
+            ], false);
+
+            DB::commit();
+
+            $coaRefresh = $this->refreshActiveSessionsBandwidth($username, $config);
+
+            Log::info("User {$username} berhasil diperbarui dengan vendor {$vendor}", [
+                'username' => $username,
+                'vendor' => $vendor,
+                'bandwidth' => $bandwidth,
+                'coa_refresh' => $coaRefresh,
+            ]);
+
+            return [
+                'username' => $username,
+                'vendor' => $vendor,
+                'bandwidth' => $bandwidth,
+                'nas' => [
+                    'ip' => $payload['ipAddress'],
+                    'port' => (int) $payload['port'],
+                ],
+                'expiration' => $expireDate,
+                'coa_refresh' => $coaRefresh,
+            ];
+        } catch (\Throwable $exception) {
+            DB::rollBack();
+
+            Log::error("Gagal memperbarui user {$username}: ".$exception->getMessage(), [
+                'username' => $username,
+                'vendor' => $vendor,
+            ]);
+
+            throw $exception;
+        }
+    }
+
     private function resolveExpireDate(?string $expiration): string
     {
         $timezone = config('app.timezone', 'UTC');

@@ -83,6 +83,42 @@ class Controller extends BaseController
         }
     }
 
+    public function updateUser(Request $request, string $username)
+    {
+        $validated = $request->validate([
+            'password' => 'required|string|min:6',
+            'vendor' => 'required|string|in:mikrotik,mikrotik_pppoe,mikrotik_hotspot,cisco,juniper,huawei',
+            'ipAddress' => 'required|ip',
+            'port' => 'required|integer|min:1|max:65535',
+            'secret' => 'required|string|min:4',
+            'max_download' => 'required|string',
+            'max_upload' => 'required|string',
+            'min_download' => 'nullable|string',
+            'min_upload' => 'nullable|string',
+            'expiration' => 'nullable|string',
+        ]);
+
+        try {
+            $result = $this->radiusService->updateUser($username, $validated);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User package updated successfully',
+                'data' => $result,
+            ], 200);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to update user: '.$exception->getMessage(), [
+                'username' => $username,
+                'vendor' => $validated['vendor'] ?? null,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
     public function syncNas(Request $request)
     {
         $validated = $request->validate([

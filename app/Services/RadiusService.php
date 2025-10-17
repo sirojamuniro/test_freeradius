@@ -413,13 +413,14 @@ class RadiusService
     public function userIsBlocked(string $username): bool
     {
         // dd($username);
-               $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->firstOrFail();
+        $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
+        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
+
         $username = escapeshellarg($username);
 
-        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
-        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
-        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $ipAddress = escapeshellarg($checkNas->nasname ?? ''); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports ?? '3799'); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret ?? ''); // Bisa dijadikan ENV jika dinamis
         $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
         return DB::table('radcheck')
             ->where('username', $username)

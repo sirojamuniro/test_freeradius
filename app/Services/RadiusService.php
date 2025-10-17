@@ -362,7 +362,7 @@ class RadiusService
         $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
         $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
         $commandDisconnect= "echo \"User-Name={$usernameSend}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-        $commandDisconnect= shell_exec($commandDisconnect);
+        $shellCommandDisconnect= shell_exec($commandDisconnect);
         if (! $exists) {
             DB::table('radcheck')->updateOrInsert(
                 ['username' => $username, 'attribute' => 'Auth-Type'],

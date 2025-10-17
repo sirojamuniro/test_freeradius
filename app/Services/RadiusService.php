@@ -354,8 +354,8 @@ class RadiusService
             ->where('attribute', 'Auth-Type')
             ->where('value', 'Reject')
             ->exists();
-                 $checkRadAcct = RadAcct::where('username', $username)->firstOrFail();
-        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+                 $checkRadAcct = RadAcct::where('username', $username)->pluck(['nasipaddress'])->toArray();
+        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->firstOrFail();
         $username = escapeshellarg($username);
 
         $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis

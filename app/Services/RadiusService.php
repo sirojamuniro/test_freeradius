@@ -354,8 +354,8 @@ class RadiusService
             ->where('attribute', 'Auth-Type')
             ->where('value', 'Reject')
             ->exists();
-                 $checkRadAcct = RadAcct::where('username', $username)->pluck(['nasipaddress'])->toArray();
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->firstOrFail();
+     $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
+        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
         $username = escapeshellarg($username);
 
         $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
@@ -392,8 +392,8 @@ class RadiusService
 
         Log::info('Radius unblock executed', ['username' => $username, 'removed' => $removed]);
 
-                 $checkRadAcct = RadAcct::where('username', $username)->pluck(['nasipaddress'])->toArray();
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->firstOrFail();
+     $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
+        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
         $username = escapeshellarg($username);
 
         $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis

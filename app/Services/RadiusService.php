@@ -413,7 +413,7 @@ class RadiusService
     public function userIsBlocked(string $username): bool
     {
         // dd($username);
-               $checkRadAcct = RadAcct::where('username', $username)->pluck(['nasipaddress'])->toArray();
+               $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
         $checkNas = Nas::whereIn('nasname', $checkRadAcct)->firstOrFail();
         $username = escapeshellarg($username);
 

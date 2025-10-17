@@ -157,6 +157,145 @@ class Controller extends BaseController
         }
     }
 
+    public function deleteNas(Request $request, string $nasname)
+    {
+        $validated = $request->validate([
+            'disconnect_users' => 'nullable|boolean',
+            'reload' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $this->radiusService->deleteNas(
+                $nasname,
+                (bool) ($validated['disconnect_users'] ?? true),
+                (bool) ($validated['reload'] ?? true)
+            );
+
+            $status = $result['status'] ?? ($result['removed'] ? 200 : 404);
+
+            return response()->json([
+                'success' => $result['removed'],
+                'message' => $result['message'] ?? ($result['removed'] ? 'NAS deleted successfully' : 'NAS not found'),
+                'data' => $result,
+            ], $status);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to delete NAS', [
+                'nasname' => $nasname,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function deactivateNas(Request $request, string $nasname)
+    {
+        $validated = $request->validate([
+            'disconnect_users' => 'nullable|boolean',
+            'reload' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $this->radiusService->deactivateNas(
+                $nasname,
+                (bool) ($validated['disconnect_users'] ?? true),
+                (bool) ($validated['reload'] ?? true)
+            );
+
+            $status = $result['status'] ?? 200;
+
+            return response()->json([
+                'success' => true,
+                'message' => 'NAS deactivated successfully',
+                'data' => $result,
+            ], $status);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to deactivate NAS', [
+                'nasname' => $nasname,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function activateNas(Request $request, string $nasname)
+    {
+        $validated = $request->validate([
+            'disconnect_users' => 'nullable|boolean',
+            'reload' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $this->radiusService->activateNas(
+                $nasname,
+                (bool) ($validated['disconnect_users'] ?? true),
+                (bool) ($validated['reload'] ?? true)
+            );
+
+            $status = $result['status'] ?? 200;
+
+            return response()->json([
+                'success' => true,
+                'message' => 'NAS activated successfully',
+                'data' => $result,
+            ], $status);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to activate NAS', [
+                'nasname' => $nasname,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function testNasConnection(Request $request)
+    {
+        $validated = $request->validate([
+            'ip_address' => 'required|ip',
+            'auth_port' => 'nullable|integer|min:1|max:65535',
+            'acct_port' => 'nullable|integer|min:1|max:65535',
+            'secret' => 'required|string|min:4',
+            'timeout' => 'nullable|integer|min:1|max:30',
+        ]);
+
+        try {
+            $result = $this->radiusService->testNasConnection(
+                $validated['ip_address'],
+                (int) ($validated['auth_port'] ?? 1812),
+                (int) ($validated['acct_port'] ?? 1813),
+                $validated['secret'],
+                (int) ($validated['timeout'] ?? 5)
+            );
+
+            return response()->json([
+                'success' => $result['reachable'],
+                'message' => $result['message'],
+                'data' => $result,
+            ], $result['reachable'] ? 200 : 424);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to test NAS connection', [
+                'ip_address' => $validated['ip_address'],
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
     public function reloadRadius()
     {
         try {

@@ -45,7 +45,7 @@ class RadiusService
                 'secret' => $secret,
                 'shortname' => 'auto_'.str_replace('.', '_', $ipAddress),
                 'type' => $vendor,
-            ], false);
+            ], true);
 
             DB::commit();
 
@@ -105,7 +105,7 @@ class RadiusService
                 'secret' => $payload['secret'],
                 'shortname' => 'auto_'.str_replace('.', '_', $payload['ipAddress']),
                 'type' => $vendor,
-            ], false);
+            ], true);
 
             DB::commit();
 
@@ -431,6 +431,204 @@ class RadiusService
             'success' => $success,
             'sessions' => $details,
         ];
+    }
+
+    public function deleteNas(string $nasname, bool $disconnectUsers = true, bool $reload = true): array
+    {
+        $nasEntry = DB::table('nas')->where('nasname', $nasname)->first();
+
+        if (! $nasEntry) {
+            return [
+                'removed' => false,
+                'status' => 404,
+                'message' => 'NAS entry not found',
+                'disconnect' => [],
+            ];
+        }
+
+        $disconnectSummary = [];
+
+        if ($disconnectUsers) {
+            $disconnectSummary = $this->suspendUsersForNas($nasname, true);
+        }
+
+        DB::table('nas')->where('nasname', $nasname)->delete();
+
+        Log::info('NAS entry deleted', [
+            'nasname' => $nasname,
+            'disconnect_count' => count($disconnectSummary),
+        ]);
+
+        $reloadResult = null;
+
+        if ($reload) {
+            $reloadResult = $this->reloadFreeRadius();
+        }
+
+        return [
+            'removed' => true,
+            'status' => 200,
+            'message' => 'NAS entry deleted successfully',
+            'disconnect' => $disconnectSummary,
+            'reload' => $reloadResult,
+        ];
+    }
+
+    public function deactivateNas(string $nasname, bool $disconnectUsers = true, bool $reload = true): array
+    {
+        $nasEntry = DB::table('nas')->where('nasname', $nasname)->first();
+
+        if (! $nasEntry) {
+            throw new \RuntimeException("NAS {$nasname} not found");
+        }
+
+        $summary = $this->suspendUsersForNas($nasname, $disconnectUsers);
+
+        $reloadResult = $reload ? $this->reloadFreeRadius() : null;
+
+        Log::info('NAS deactivated', [
+            'nasname' => $nasname,
+            'affected_users' => count($summary),
+        ]);
+
+        return [
+            'nasname' => $nasname,
+            'blocked_users' => $summary,
+            'reload' => $reloadResult,
+            'status' => 200,
+        ];
+    }
+
+    public function activateNas(string $nasname, bool $disconnectUsers = true, bool $reload = true): array
+    {
+        $nasEntry = DB::table('nas')->where('nasname', $nasname)->first();
+
+        if (! $nasEntry) {
+            throw new \RuntimeException("NAS {$nasname} not found");
+        }
+
+        $summary = $this->resumeUsersForNas($nasname, $disconnectUsers);
+
+        $reloadResult = $reload ? $this->reloadFreeRadius() : null;
+
+        Log::info('NAS reactivated', [
+            'nasname' => $nasname,
+            'affected_users' => count($summary),
+        ]);
+
+        return [
+            'nasname' => $nasname,
+            'unblocked_users' => $summary,
+            'reload' => $reloadResult,
+            'status' => 200,
+        ];
+    }
+
+    public function testNasConnection(string $ipAddress, int $authPort, int $acctPort, string $secret, int $timeout = 5): array
+    {
+        $authReachable = $this->probePort($ipAddress, $authPort, $timeout);
+        $acctReachable = $this->probePort($ipAddress, $acctPort, $timeout);
+
+        $reachable = $authReachable && $acctReachable;
+
+        $message = $reachable
+            ? 'NAS authentication and accounting ports are reachable.'
+            : sprintf(
+                'NAS connectivity issue. Auth port reachable: %s, Acct port reachable: %s',
+                $authReachable ? 'yes' : 'no',
+                $acctReachable ? 'yes' : 'no'
+            );
+
+        Log::info('NAS connectivity test executed', [
+            'ip_address' => $ipAddress,
+            'auth_port' => $authPort,
+            'acct_port' => $acctPort,
+            'reachable' => $reachable,
+        ]);
+
+        return [
+            'ip_address' => $ipAddress,
+            'auth_port' => $authPort,
+            'acct_port' => $acctPort,
+            'reachable' => $reachable,
+            'auth_port_reachable' => $authReachable,
+            'acct_port_reachable' => $acctReachable,
+            'tested_at' => Carbon::now()->toDateTimeString(),
+            'message' => $message,
+        ];
+    }
+
+    protected function suspendUsersForNas(string $nasname, bool $disconnectSessions = true): array
+    {
+        $usernames = DB::table('radacct')
+            ->where('nasipaddress', $nasname)
+            ->pluck('username')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $results = [];
+
+        foreach ($usernames as $username) {
+            $disconnectResult = $disconnectSessions ? $this->disconnectUser($username) : null;
+            $blockResult = $this->blockUser($username, false);
+
+            $results[] = [
+                'username' => $username,
+                'disconnect' => $disconnectResult,
+                'block' => $blockResult,
+            ];
+        }
+
+        return $results;
+    }
+
+    protected function resumeUsersForNas(string $nasname, bool $disconnectSessions = true): array
+    {
+        $usernames = DB::table('radacct')
+            ->where('nasipaddress', $nasname)
+            ->pluck('username')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $results = [];
+
+        foreach ($usernames as $username) {
+            $unblockResult = $this->unblockUser($username, false);
+            $disconnectResult = $disconnectSessions ? $this->disconnectUser($username) : null;
+
+            $results[] = [
+                'username' => $username,
+                'disconnect' => $disconnectResult,
+                'unblock' => $unblockResult,
+            ];
+        }
+
+        return $results;
+    }
+
+    protected function probePort(string $ipAddress, int $port, int $timeout): bool
+    {
+        try {
+            $connection = @fsockopen($ipAddress, $port, $errno, $errstr, $timeout);
+
+            if (! $connection) {
+                return false;
+            }
+
+            fclose($connection);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to probe NAS port', [
+                'ip_address' => $ipAddress,
+                'port' => $port,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     private function sendCoaDisconnect(string $username): array

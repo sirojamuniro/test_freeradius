@@ -347,10 +347,18 @@ class RadiusService
 
     public function blockUser(string $username, bool $disconnect = true): array
     {
-        DB::table('radcheck')->updateOrInsert(
-            ['username' => $username, 'attribute' => 'Auth-Type'],
-            ['op' => ':=', 'value' => 'Reject']
-        );
+        $exists = DB::table('radcheck')
+            ->where('username', $username)
+            ->where('attribute', 'Auth-Type')
+            ->where('value', 'Reject')
+            ->exists();
+
+        if (! $exists) {
+            DB::table('radcheck')->updateOrInsert(
+                ['username' => $username, 'attribute' => 'Auth-Type'],
+                ['op' => ':=', 'value' => 'Reject']
+            );
+        }
 
         Log::info('Radius block applied for user', ['username' => $username]);
 
@@ -623,6 +631,30 @@ class RadiusService
         }
 
         return $results;
+    }
+
+    public function getActiveUsersForNas(string $nasname): array
+    {
+        $sessions = DB::table('radacct')
+            ->where('nasipaddress', $nasname)
+            ->whereNull('acctstoptime')
+            ->select(
+                'username',
+                'framedipaddress',
+                'nasipaddress',
+                'acctsessionid',
+                'callingstationid',
+                'radacctid',
+                'acctstarttime'
+            )
+            ->orderByDesc('acctstarttime')
+            ->get();
+
+        return [
+            'nasname' => $nasname,
+            'usernames' => $sessions->pluck('username')->filter()->unique()->values(),
+            'sessions' => $sessions,
+        ];
     }
 
     protected function probePort(string $ipAddress, int $port, int $timeout): bool

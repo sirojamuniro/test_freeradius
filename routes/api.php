@@ -19,6 +19,7 @@ Route::put('customer/{username}', [Controller::class, 'updateUser'])->name('radi
 Route::post('nas/sync', [Controller::class, 'syncNas'])->name('radius.nas.sync');
 Route::post('nas/{nasname}/deactivate', [Controller::class, 'deactivateNas'])->name('radius.nas.deactivate');
 Route::post('nas/{nasname}/activate', [Controller::class, 'activateNas'])->name('radius.nas.activate');
+Route::get('nas/{nasname}/users', [Controller::class, 'listNasUsers'])->name('radius.nas.users');
 Route::delete('nas/{nasname}', [Controller::class, 'deleteNas'])->name('radius.nas.delete');
 Route::post('nas/test-connection', [Controller::class, 'testNasConnection'])->name('radius.nas.test');
 Route::post('radius/reload', [Controller::class, 'reloadRadius'])->name('radius.reload');

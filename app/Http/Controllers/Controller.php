@@ -259,6 +259,29 @@ class Controller extends BaseController
         }
     }
 
+    public function listNasUsers(string $nasname)
+    {
+        try {
+            $result = $this->radiusService->getActiveUsersForNas($nasname);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Active NAS users retrieved',
+                'data' => $result,
+            ], 200);
+        } catch (\Throwable $exception) {
+            Log::error('Failed to list NAS users', [
+                'nasname' => $nasname,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exception->getMessage(),
+            ], 500);
+        }
+    }
+
     public function testNasConnection(Request $request)
     {
         $validated = $request->validate([

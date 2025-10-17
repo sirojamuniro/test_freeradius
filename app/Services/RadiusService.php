@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\Nas;
+use App\Models\RadAcct;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -352,6 +354,14 @@ class RadiusService
             ->where('attribute', 'Auth-Type')
             ->where('value', 'Reject')
             ->exists();
+                 $checkRadAcct = RadAcct::where('username', $username)->firstOrFail();
+        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+        $username = escapeshellarg($username);
+
+        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
 
         if (! $exists) {
             DB::table('radcheck')->updateOrInsert(
@@ -382,6 +392,14 @@ class RadiusService
 
         Log::info('Radius unblock executed', ['username' => $username, 'removed' => $removed]);
 
+         $checkRadAcct = RadAcct::where('username', $username)->firstOrFail();
+        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+        $username = escapeshellarg($username);
+
+        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
         $result = ['unblocked' => $removed > 0];
 
         if ($disconnect) {
@@ -394,6 +412,14 @@ class RadiusService
 
     public function userIsBlocked(string $username): bool
     {
+        $checkRadAcct = RadAcct::where('username', $username)->firstOrFail();
+        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+        $username = escapeshellarg($username);
+
+        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
         return DB::table('radcheck')
             ->where('username', $username)
             ->where('attribute', 'Auth-Type')

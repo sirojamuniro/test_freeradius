@@ -311,7 +311,7 @@ class RadiusService
         ];
 
         if ($reload) {
-            $result['reload'] = $this->reloadFreeRadius();
+            $result['reload'] = $this->reloadFreeRadiusSafely();
         }
 
         return $result;
@@ -459,11 +459,7 @@ class RadiusService
             'disconnect_count' => count($disconnectSummary),
         ]);
 
-        $reloadResult = null;
-
-        if ($reload) {
-            $reloadResult = $this->reloadFreeRadius();
-        }
+        $reloadResult = $reload ? $this->reloadFreeRadiusSafely() : null;
 
         return [
             'removed' => true,
@@ -484,7 +480,7 @@ class RadiusService
 
         $summary = $this->suspendUsersForNas($nasname, $disconnectUsers);
 
-        $reloadResult = $reload ? $this->reloadFreeRadius() : null;
+        $reloadResult = $reload ? $this->reloadFreeRadiusSafely() : null;
 
         Log::info('NAS deactivated', [
             'nasname' => $nasname,
@@ -509,7 +505,7 @@ class RadiusService
 
         $summary = $this->resumeUsersForNas($nasname, $disconnectUsers);
 
-        $reloadResult = $reload ? $this->reloadFreeRadius() : null;
+        $reloadResult = $reload ? $this->reloadFreeRadiusSafely() : null;
 
         Log::info('NAS reactivated', [
             'nasname' => $nasname,
@@ -524,7 +520,15 @@ class RadiusService
         ];
     }
 
-    public function testNasConnection(string $ipAddress, int $authPort, int $acctPort, string $secret, int $timeout = 5): array
+    public function testNasConnection(
+        string $ipAddress,
+        int $authPort,
+        int $acctPort,
+        string $secret,
+        ?string $username = null,
+        ?string $password = null,
+        int $timeout = 5
+    ): array
     {
         $authReachable = $this->probePort($ipAddress, $authPort, $timeout);
         $acctReachable = $this->probePort($ipAddress, $acctPort, $timeout);
@@ -538,6 +542,18 @@ class RadiusService
                 $authReachable ? 'yes' : 'no',
                 $acctReachable ? 'yes' : 'no'
             );
+
+        $radtestResult = null;
+
+        if ($username && $password) {
+            $radtestResult = $this->runRadtest($username, $password, $ipAddress, $authPort, $secret, $timeout);
+
+            if ($radtestResult['success']) {
+                $message .= ' radtest authentication succeeded.';
+            } else {
+                $message .= ' radtest authentication failed.';
+            }
+        }
 
         Log::info('NAS connectivity test executed', [
             'ip_address' => $ipAddress,
@@ -555,6 +571,7 @@ class RadiusService
             'acct_port_reachable' => $acctReachable,
             'tested_at' => Carbon::now()->toDateTimeString(),
             'message' => $message,
+            'radtest' => $radtestResult,
         ];
     }
 
@@ -628,6 +645,70 @@ class RadiusService
             ]);
 
             return false;
+        }
+    }
+
+    protected function runRadtest(string $username, string $password, string $ipAddress, int $authPort, string $secret, int $timeout): array
+    {
+        $command = sprintf(
+            'radtest %s %s %s %d %s',
+            escapeshellarg($username),
+            escapeshellarg($password),
+            escapeshellarg($ipAddress),
+            $authPort,
+            escapeshellarg($secret)
+        );
+
+        $process = Process::fromShellCommandline($command);
+        $process->setTimeout($timeout);
+
+        try {
+            $process->run();
+
+            $success = $process->isSuccessful();
+            $output = trim($process->getOutput());
+            $errorOutput = trim($process->getErrorOutput());
+
+            Log::info('radtest executed', [
+                'username' => $username,
+                'ip_address' => $ipAddress,
+                'auth_port' => $authPort,
+                'success' => $success,
+                'exit_code' => $process->getExitCode(),
+            ]);
+
+            return [
+                'success' => $success,
+                'exit_code' => $process->getExitCode(),
+                'output' => $output,
+                'error' => $errorOutput,
+            ];
+        } catch (\Throwable $exception) {
+            Log::warning('radtest execution failed', [
+                'username' => $username,
+                'ip_address' => $ipAddress,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'exit_code' => null,
+                'output' => '',
+                'error' => $exception->getMessage(),
+            ];
+        }
+    }
+
+    protected function reloadFreeRadiusSafely(): ?array
+    {
+        try {
+            return $this->reloadFreeRadius();
+        } catch (\Throwable $exception) {
+            Log::warning('FreeRADIUS reload failed but continuing', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return null;
         }
     }
 

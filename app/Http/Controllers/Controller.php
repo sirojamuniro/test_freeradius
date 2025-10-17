@@ -267,6 +267,8 @@ class Controller extends BaseController
             'acct_port' => 'nullable|integer|min:1|max:65535',
             'secret' => 'required|string|min:4',
             'timeout' => 'nullable|integer|min:1|max:30',
+            'username' => 'nullable|string',
+            'password' => 'nullable|string',
         ]);
 
         try {
@@ -275,6 +277,8 @@ class Controller extends BaseController
                 (int) ($validated['auth_port'] ?? 1812),
                 (int) ($validated['acct_port'] ?? 1813),
                 $validated['secret'],
+                $validated['username'] ?? null,
+                $validated['password'] ?? null,
                 (int) ($validated['timeout'] ?? 5)
             );
 

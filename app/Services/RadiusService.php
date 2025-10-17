@@ -400,6 +400,7 @@ class RadiusService
         $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
         $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
         $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+           $shellCommandDisconnect= shell_exec($commandDisconnect);
         $result = ['unblocked' => $removed > 0];
 
         if ($disconnect) {
@@ -422,6 +423,7 @@ class RadiusService
         $port = escapeshellarg($checkNas->ports ?? '3799'); // Bisa dijadikan ENV jika dinamis
         $secret = escapeshellarg($checkNas->secret ?? ''); // Bisa dijadikan ENV jika dinamis
         $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+            $shellCommandDisconnect= shell_exec($commandDisconnect);
         return DB::table('radcheck')
             ->where('username', $username)
             ->where('attribute', 'Auth-Type')

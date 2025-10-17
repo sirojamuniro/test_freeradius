@@ -356,12 +356,12 @@ class RadiusService
             ->exists();
      $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
         $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
-        $username = escapeshellarg($username);
+        $usernameSend = escapeshellarg($username);
 
         $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
         $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
         $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
-        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+        $commandDisconnect= "echo \"User-Name={$usernameSend}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
 
         if (! $exists) {
             DB::table('radcheck')->updateOrInsert(

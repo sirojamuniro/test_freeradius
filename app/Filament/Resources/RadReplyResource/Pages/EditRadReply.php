@@ -34,7 +34,7 @@ class EditRadReply extends EditRecord
         // $commandDisconnect = "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
         Log::info('commandChangeBandwidth: '.$commandChangeBandwidth);
         $outputChangeBandwidth = shell_exec($commandChangeBandwidth);
-        $outputdisconnect = shell_exec()
+        $outputdisconnect = shell_exec($commandDisconnect);
         // $outputDisconnect = shell_exec($commandDisconnect);
         if ($outputChangeBandwidth) {
             Log::info("Command Output: \n".$outputChangeBandwidth);

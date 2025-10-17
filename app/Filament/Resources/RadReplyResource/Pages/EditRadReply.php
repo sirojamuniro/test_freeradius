@@ -7,8 +7,7 @@ use App\Models\Nas;
 use App\Models\RadAcct;
 use Filament\Pages\Actions;
 use Filament\Resources\Pages\EditRecord;
-use Illuminate\Support\Facades\Log;
-use Symfony\Component\Process\Process;
+use Log;
 
 class EditRadReply extends EditRecord
 {
@@ -23,79 +22,24 @@ class EditRadReply extends EditRecord
 
     protected function afterSave(): void
     {
-        $radAcct = RadAcct::where('username', $this->record->username)->first();
-
-        if (! $radAcct) {
-            Log::warning('No active radacct session found for username; skipping CoA/Disconnect.', [
-                'username' => $this->record->username,
-            ]);
-
-            return;
-        }
-
-        $nas = Nas::where('nasname', $radAcct->nasipaddress)->first();
-
-        if (! $nas) {
-            Log::warning('NAS entry not found while trying to apply CoA.', [
-                'username' => $this->record->username,
-                'nasname' => $radAcct->nasipaddress,
-            ]);
-
-            return;
-        }
-
-        $this->runRadclientCommand(
-            nasAddress: $nas->nasname,
-            port: (int) $nas->ports,
-            secret: $nas->secret,
-            inputLines: [
-                'User-Name='.$this->record->username,
-                'Mikrotik-Rate-Limit='.$this->record->value,
-            ],
-            action: 'coa'
-        );
-
-        $this->runRadclientCommand(
-            nasAddress: $nas->nasname,
-            port: (int) $nas->ports,
-            secret: $nas->secret,
-            inputLines: [
-                'User-Name='.$this->record->username,
-            ],
-            action: 'disconnect'
-        );
-    }
-
-    protected function runRadclientCommand(string $nasAddress, int $port, string $secret, array $inputLines, string $action): void
-    {
-        $command = sprintf(
-            'radclient -x %s %s %s',
-            escapeshellarg($nasAddress.':'.$port),
-            $action,
-            escapeshellarg($secret)
-        );
-
-        $process = Process::fromShellCommandline($command);
-        $process->setInput(implode("\n", array_filter($inputLines))."\n");
-        $process->run();
-
-        $output = trim($process->getOutput());
-        $errorOutput = trim($process->getErrorOutput());
-
-        if ($process->isSuccessful()) {
-            Log::info('radclient command executed successfully.', [
-                'command' => $command,
-                'action' => $action,
-                'output' => $output,
-            ]);
+        $checkRadAcct = RadAcct::where('username', $this->record->username)->firstOrFail();
+        $checkNas = Nas::where('nasname', $checkRadAcct->nasipaddress)->firstOrFail();
+        $username = escapeshellarg($this->record->username);
+        $rateLimit = escapeshellarg($this->record->value); // Pastikan value sesuai format "15M/10M"
+        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
+        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
+        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
+        $commandChangeBandwidth = "echo \"User-Name={$username}, Mikrotik-Rate-Limit={$rateLimit}\" | radclient -x {$ipAddress}:{$port} coa {$secret}";
+        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+        // $commandDisconnect = "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
+        Log::info('commandChangeBandwidth: '.$commandChangeBandwidth);
+        $outputChangeBandwidth = shell_exec($commandChangeBandwidth);
+        $outputdisconnect = shell_exec()
+        // $outputDisconnect = shell_exec($commandDisconnect);
+        if ($outputChangeBandwidth) {
+            Log::info("Command Output: \n".$outputChangeBandwidth);
         } else {
-            Log::warning('radclient command failed.', [
-                'command' => $command,
-                'action' => $action,
-                'exit_code' => $process->getExitCode(),
-                'output' => $output,
-                'error_output' => $errorOutput,
-            ]);
+            Log::warning('Perintah gagal atau tidak ada output.');
         }
     }
 }

@@ -231,6 +231,7 @@ class Controller extends BaseController
             'disconnect_users' => 'nullable|boolean',
             'reload' => 'nullable|boolean',
         ]);
+        set_time_limit(3600); // Extend execution time to 1 hour
 
         try {
             $result = $this->radiusService->activateNas(

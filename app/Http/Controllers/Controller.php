@@ -232,6 +232,7 @@ class Controller extends BaseController
             'reload' => 'nullable|boolean',
         ]);
         set_time_limit(3600); // Extend execution time to 1 hour
+        ini_set('memory_limit', '-1');
 
         try {
             $result = $this->radiusService->activateNas(

@@ -354,15 +354,8 @@ class RadiusService
             ->where('attribute', 'Auth-Type')
             ->where('value', 'Reject')
             ->exists();
-     $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
-        $usernameSend = escapeshellarg($username);
 
-        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
-        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
-        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
-        $commandDisconnect= "echo \"User-Name={$usernameSend}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-        $shellCommandDisconnect= shell_exec($commandDisconnect);
+        // Insert/update Auth-Type=Reject to block user
         if (! $exists) {
             DB::table('radcheck')->updateOrInsert(
                 ['username' => $username, 'attribute' => 'Auth-Type'],
@@ -374,8 +367,8 @@ class RadiusService
 
         $result = ['blocked' => true];
 
+        // Only disconnect if requested and NAS is found
         if ($disconnect) {
-            $result['coa'] = $this->sendCoaDisconnect($username);
             $result['disconnect'] = $this->disconnectUser($username);
         }
 
@@ -392,19 +385,10 @@ class RadiusService
 
         Log::info('Radius unblock executed', ['username' => $username, 'removed' => $removed]);
 
-     $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
-        $username = escapeshellarg($username);
-
-        $ipAddress = escapeshellarg($checkNas->nasname); // Bisa dijadikan ENV jika dinamis
-        $port = escapeshellarg($checkNas->ports); // Bisa dijadikan ENV jika dinamis
-        $secret = escapeshellarg($checkNas->secret); // Bisa dijadikan ENV jika dinamis
-        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-           $shellCommandDisconnect= shell_exec($commandDisconnect);
         $result = ['unblocked' => $removed > 0];
 
+        // Only disconnect if requested
         if ($disconnect) {
-            $result['coa'] = $this->sendCoaDisconnect($username);
             $result['disconnect'] = $this->disconnectUser($username);
         }
 
@@ -413,17 +397,6 @@ class RadiusService
 
     public function userIsBlocked(string $username): bool
     {
-        // dd($username);
-        $checkRadAcct = RadAcct::where('username', $username)->pluck('nasipaddress');
-        $checkNas = Nas::whereIn('nasname', $checkRadAcct)->first();
-
-        $username = escapeshellarg($username);
-
-        $ipAddress = escapeshellarg($checkNas->nasname ?? ''); // Bisa dijadikan ENV jika dinamis
-        $port = escapeshellarg($checkNas->ports ?? '3799'); // Bisa dijadikan ENV jika dinamis
-        $secret = escapeshellarg($checkNas->secret ?? ''); // Bisa dijadikan ENV jika dinamis
-        $commandDisconnect= "echo \"User-Name={$username}\" | radclient -x {$ipAddress}:{$port} disconnect {$secret}";
-            $shellCommandDisconnect= shell_exec($commandDisconnect);
         return DB::table('radcheck')
             ->where('username', $username)
             ->where('attribute', 'Auth-Type')
@@ -1312,7 +1285,8 @@ class RadiusService
         string $secret,
         string $username,
         array $attributes,
-        string $command
+        string $command,
+        int $timeout = 3
     ): array {
         $port ??= 3799;
         $inputLines = ["User-Name={$username}"];
@@ -1323,9 +1297,33 @@ class RadiusService
             }
         }
 
-        $process = Process::fromShellCommandline(sprintf('radclient -x %s:%s %s %s', $ipAddress, $port, $command, $secret));
+        // Add timeout (-t) and retry (-r) flags to prevent indefinite hangs
+        $process = Process::fromShellCommandline(
+            sprintf('radclient -t %d -r 1 -x %s:%s %s %s', $timeout, $ipAddress, $port, $command, $secret)
+        );
         $process->setInput(implode("\n", $inputLines)."\n");
-        $process->run();
+        $process->setTimeout($timeout + 2); // Extra buffer for process timeout
+
+        try {
+            $process->run();
+        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+            Log::warning('radclient command timed out', [
+                'ip' => $ipAddress,
+                'port' => $port,
+                'command' => $command,
+                'timeout' => $timeout,
+            ]);
+
+            return [
+                'success' => false,
+                'output' => '',
+                'error' => 'Command timed out after ' . $timeout . ' seconds',
+                'ip' => $ipAddress,
+                'port' => $port,
+                'command' => sprintf('radclient -t %d -r 1 -x %s:%s %s ****', $timeout, $ipAddress, $port, $command),
+                'timed_out' => true,
+            ];
+        }
 
         $output = trim($process->getOutput());
         $errorOutput = trim($process->getErrorOutput());
@@ -1337,7 +1335,7 @@ class RadiusService
             'error' => $errorOutput,
             'ip' => $ipAddress,
             'port' => $port,
-            'command' => sprintf('radclient -x %s:%s %s ****', $ipAddress, $port, $command),
+            'command' => sprintf('radclient -t %d -r 1 -x %s:%s %s ****', $timeout, $ipAddress, $port, $command),
         ];
     }
 }

@@ -349,13 +349,49 @@ class Controller extends BaseController
 
     public function blockUser(Request $request)
     {
+        Log::info('blockUser API called', [
+            'ip' => $request->ip(),
+            'payload' => $request->except(['nas_secret']),
+        ]);
+
         $validated = $request->validate([
             'username' => 'required|string',
             'disconnect' => 'nullable|boolean',
+            'nas_ip' => 'nullable|ip',
+            'nas_port' => 'nullable|integer|min:1|max:65535',
+            'nas_secret' => 'nullable|string',
         ]);
 
+        $nasConfig = null;
+        if (! empty($validated['nas_ip']) && ! empty($validated['nas_secret'])) {
+            $nasConfig = [
+                'ip' => $validated['nas_ip'],
+                'port' => $validated['nas_port'] ?? 3799,
+                'secret' => $validated['nas_secret'],
+            ];
+            Log::info('blockUser: NAS config provided for direct disconnect', [
+                'username' => $validated['username'],
+                'nas_ip' => $nasConfig['ip'],
+                'nas_port' => $nasConfig['port'],
+            ]);
+        } else {
+            Log::info('blockUser: No NAS config, will use radacct lookup', [
+                'username' => $validated['username'],
+            ]);
+        }
+
         try {
-            $result = $this->radiusService->blockUser($validated['username'], (bool) ($validated['disconnect'] ?? true));
+            $result = $this->radiusService->blockUser(
+                $validated['username'],
+                (bool) ($validated['disconnect'] ?? true),
+                $nasConfig
+            );
+
+            Log::info('blockUser: Success', [
+                'username' => $validated['username'],
+                'blocked' => $result['blocked'] ?? false,
+                'disconnect_success' => $result['disconnect']['success'] ?? null,
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -363,9 +399,10 @@ class Controller extends BaseController
                 'data' => $result,
             ]);
         } catch (\Throwable $exception) {
-            Log::error('Failed to block user on FreeRADIUS', [
+            Log::error('blockUser: Failed', [
                 'username' => $validated['username'],
                 'error' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
             ]);
 
             return response()->json([
@@ -377,13 +414,49 @@ class Controller extends BaseController
 
     public function unblockUser(Request $request)
     {
+        Log::info('unblockUser API called', [
+            'ip' => $request->ip(),
+            'payload' => $request->except(['nas_secret']),
+        ]);
+
         $validated = $request->validate([
             'username' => 'required|string',
             'disconnect' => 'nullable|boolean',
+            'nas_ip' => 'nullable|ip',
+            'nas_port' => 'nullable|integer|min:1|max:65535',
+            'nas_secret' => 'nullable|string',
         ]);
 
+        $nasConfig = null;
+        if (! empty($validated['nas_ip']) && ! empty($validated['nas_secret'])) {
+            $nasConfig = [
+                'ip' => $validated['nas_ip'],
+                'port' => $validated['nas_port'] ?? 3799,
+                'secret' => $validated['nas_secret'],
+            ];
+            Log::info('unblockUser: NAS config provided for direct disconnect', [
+                'username' => $validated['username'],
+                'nas_ip' => $nasConfig['ip'],
+                'nas_port' => $nasConfig['port'],
+            ]);
+        } else {
+            Log::info('unblockUser: No NAS config, will use radacct lookup', [
+                'username' => $validated['username'],
+            ]);
+        }
+
         try {
-            $result = $this->radiusService->unblockUser($validated['username'], (bool) ($validated['disconnect'] ?? true));
+            $result = $this->radiusService->unblockUser(
+                $validated['username'],
+                (bool) ($validated['disconnect'] ?? true),
+                $nasConfig
+            );
+
+            Log::info('unblockUser: Success', [
+                'username' => $validated['username'],
+                'unblocked' => $result['unblocked'] ?? false,
+                'disconnect_success' => $result['disconnect']['success'] ?? null,
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -391,9 +464,10 @@ class Controller extends BaseController
                 'data' => $result,
             ]);
         } catch (\Throwable $exception) {
-            Log::error('Failed to unblock user on FreeRADIUS', [
+            Log::error('unblockUser: Failed', [
                 'username' => $validated['username'],
                 'error' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString(),
             ]);
 
             return response()->json([

@@ -347,7 +347,7 @@ class RadiusService
         ];
     }
 
-    public function blockUser(string $username, bool $disconnect = true): array
+    public function blockUser(string $username, bool $disconnect = true, ?array $nasConfig = null): array
     {
         $exists = DB::table('radcheck')
             ->where('username', $username)
@@ -367,15 +367,33 @@ class RadiusService
 
         $result = ['blocked' => true];
 
-        // Only disconnect if requested and NAS is found
+        // Only disconnect if requested
         if ($disconnect) {
-            $result['disconnect'] = $this->disconnectUser($username);
+            // If NAS config is provided, use it directly (bypasses radacct lookup)
+            if ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+                $result['disconnect'] = $this->runRadclientCommand(
+                    $nasConfig['ip'],
+                    (int) ($nasConfig['port'] ?? 3799),
+                    $nasConfig['secret'],
+                    $username,
+                    [],
+                    'disconnect'
+                );
+                Log::info('Direct disconnect command sent', [
+                    'username' => $username,
+                    'nas_ip' => $nasConfig['ip'],
+                    'nas_port' => $nasConfig['port'] ?? 3799,
+                ]);
+            } else {
+                // Fallback to session-based disconnect (requires radacct data)
+                $result['disconnect'] = $this->disconnectUser($username);
+            }
         }
 
         return $result;
     }
 
-    public function unblockUser(string $username, bool $disconnect = true): array
+    public function unblockUser(string $username, bool $disconnect = true, ?array $nasConfig = null): array
     {
         $removed = DB::table('radcheck')
             ->where('username', $username)
@@ -389,7 +407,25 @@ class RadiusService
 
         // Only disconnect if requested
         if ($disconnect) {
-            $result['disconnect'] = $this->disconnectUser($username);
+            // If NAS config is provided, use it directly (bypasses radacct lookup)
+            if ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+                $result['disconnect'] = $this->runRadclientCommand(
+                    $nasConfig['ip'],
+                    (int) ($nasConfig['port'] ?? 3799),
+                    $nasConfig['secret'],
+                    $username,
+                    [],
+                    'disconnect'
+                );
+                Log::info('Direct disconnect command sent', [
+                    'username' => $username,
+                    'nas_ip' => $nasConfig['ip'],
+                    'nas_port' => $nasConfig['port'] ?? 3799,
+                ]);
+            } else {
+                // Fallback to session-based disconnect (requires radacct data)
+                $result['disconnect'] = $this->disconnectUser($username);
+            }
         }
 
         return $result;
@@ -1289,53 +1325,101 @@ class RadiusService
         int $timeout = 3
     ): array {
         $port ??= 3799;
-        $inputLines = ["User-Name={$username}"];
 
+        // Build input lines for radclient
+        $inputLines = ["User-Name={$username}"];
         foreach ($attributes as $attribute => $values) {
             foreach (array_filter((array) $values) as $value) {
                 $inputLines[] = "{$attribute}={$value}";
             }
         }
 
-        // Add timeout (-t) and retry (-r) flags to prevent indefinite hangs
-        $process = Process::fromShellCommandline(
-            sprintf('radclient -t %d -r 1 -x %s:%s %s %s', $timeout, $ipAddress, $port, $command, $secret)
-        );
-        $process->setInput(implode("\n", $inputLines)."\n");
-        $process->setTimeout($timeout + 2); // Extra buffer for process timeout
+        $inputData = implode(', ', $inputLines);
+        $maskedCommand = sprintf('echo "%s" | radclient -t %d -r 1 -x %s:%s %s ****', $inputData, $timeout, $ipAddress, $port, $command);
 
+        Log::info('radclient: Preparing command', [
+            'command' => $maskedCommand,
+            'input' => $inputLines,
+            'username' => $username,
+            'nas_ip' => $ipAddress,
+            'nas_port' => $port,
+            'action' => $command,
+        ]);
+
+        // METHOD 1: shell_exec (primary)
+        $shellCommand = sprintf(
+            'echo "%s" | radclient -t %d -r 1 -x %s:%s %s %s 2>&1',
+            addslashes($inputData),
+            $timeout,
+            escapeshellarg($ipAddress),
+            escapeshellarg((string) $port),
+            escapeshellarg($command),
+            escapeshellarg($secret)
+        );
+
+        Log::info('radclient: Trying shell_exec...');
+        $shellOutput = shell_exec($shellCommand);
+        $shellOutput = $shellOutput !== null ? trim($shellOutput) : '';
+
+        Log::info('radclient: shell_exec result', ['output' => $shellOutput]);
+
+        // METHOD 2: Process (fallback/confirmation)
+        $processCommand = sprintf('radclient -t %d -r 1 -x %s:%s %s %s', $timeout, $ipAddress, $port, $command, $secret);
+        $process = Process::fromShellCommandline($processCommand);
+        $process->setInput(implode("\n", $inputLines) . "\n");
+        $process->setTimeout($timeout + 2);
+
+        Log::info('radclient: Trying Process...');
         try {
             $process->run();
-        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
-            Log::warning('radclient command timed out', [
-                'ip' => $ipAddress,
-                'port' => $port,
-                'command' => $command,
-                'timeout' => $timeout,
-            ]);
+            $processOutput = trim($process->getOutput());
+            $processError = trim($process->getErrorOutput());
+            $processSuccess = $process->isSuccessful();
 
-            return [
-                'success' => false,
-                'output' => '',
-                'error' => 'Command timed out after ' . $timeout . ' seconds',
-                'ip' => $ipAddress,
-                'port' => $port,
-                'command' => sprintf('radclient -t %d -r 1 -x %s:%s %s ****', $timeout, $ipAddress, $port, $command),
-                'timed_out' => true,
-            ];
+            Log::info('radclient: Process result', [
+                'exit_code' => $process->getExitCode(),
+                'output' => $processOutput,
+                'error' => $processError,
+            ]);
+        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+            $processOutput = '';
+            $processError = 'Process timed out';
+            $processSuccess = false;
+            Log::warning('radclient: Process timed out');
         }
 
-        $output = trim($process->getOutput());
-        $errorOutput = trim($process->getErrorOutput());
-        $success = $process->isSuccessful();
+        // Combine results - success if either method worked
+        $output = $shellOutput ?: $processOutput;
+        $success = str_contains($output, 'Received') || str_contains($output, 'rad_recv') || $processSuccess;
+
+        if ($success) {
+            Log::info('radclient: Command succeeded', [
+                'username' => $username,
+                'action' => $command,
+                'nas_ip' => $ipAddress,
+                'shell_output' => $shellOutput,
+                'process_output' => $processOutput,
+            ]);
+        } else {
+            Log::error('radclient: Command failed', [
+                'username' => $username,
+                'action' => $command,
+                'nas_ip' => $ipAddress,
+                'shell_output' => $shellOutput,
+                'process_output' => $processOutput,
+                'process_error' => $processError ?? '',
+            ]);
+        }
 
         return [
             'success' => $success,
             'output' => $output,
-            'error' => $errorOutput,
+            'error' => $success ? '' : ($processError ?? $output),
             'ip' => $ipAddress,
             'port' => $port,
-            'command' => sprintf('radclient -t %d -r 1 -x %s:%s %s ****', $timeout, $ipAddress, $port, $command),
+            'command' => $maskedCommand,
+            'shell_output' => $shellOutput,
+            'process_output' => $processOutput ?? '',
         ];
     }
 }

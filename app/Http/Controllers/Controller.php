@@ -25,7 +25,7 @@ class Controller extends BaseController
     public function activateUser(Request $request)
     {
         $request->validate([
-            'customer' => 'required|string|unique:radcheck,username',
+            'customer' => 'required|string',
             'password' => 'required|string|min:6',
             'vendor' => 'required|string|in:mikrotik,mikrotik_pppoe,mikrotik_hotspot,cisco,juniper,huawei',
             'ipAddress' => 'required|ip',

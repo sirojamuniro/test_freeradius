@@ -26,3 +26,5 @@ Route::post('radius/reload', [Controller::class, 'reloadRadius'])->name('radius.
 Route::post('radius/block', [Controller::class, 'blockUser'])->name('radius.block');
 Route::post('radius/unblock', [Controller::class, 'unblockUser'])->name('radius.unblock');
 Route::post('radius/disconnect', [Controller::class, 'disconnectUserSessions'])->name('radius.disconnect');
+Route::get('radius/fup', [Controller::class, 'checkFUP'])->name('radius.fup');
+

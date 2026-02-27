@@ -369,8 +369,15 @@ class RadiusService
 
         // Only disconnect if requested
         if ($disconnect) {
-            // If NAS config is provided, use it directly (bypasses radacct lookup)
-            if ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+            // Priority 1: Try session-based disconnect (retrieves Acct-Session-Id from DB)
+            $sessionResult = $this->disconnectUser($username);
+
+            // If we found sessions (even if disconnect failed for some reason), or if DB says sessions exist
+            if ($sessionResult['success'] || count($sessionResult['sessions']) > 0 || ($sessionResult['message'] ?? '') !== 'No active sessions') {
+                $result['disconnect'] = $sessionResult;
+            } elseif ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+                // Priority 2: Fallback to direct disconnect using NAS config
+                // This sends a Disconnect-Request with ONLY the User-Name.
                 $result['disconnect'] = $this->runRadclientCommand(
                     $nasConfig['ip'],
                     (int) ($nasConfig['port'] ?? 3799),
@@ -379,14 +386,13 @@ class RadiusService
                     [],
                     'disconnect'
                 );
-                Log::info('Direct disconnect command sent', [
+                Log::info('Direct disconnect command sent (fallback)', [
                     'username' => $username,
                     'nas_ip' => $nasConfig['ip'],
                     'nas_port' => $nasConfig['port'] ?? 3799,
                 ]);
             } else {
-                // Fallback to session-based disconnect (requires radacct data)
-                $result['disconnect'] = $this->disconnectUser($username);
+                $result['disconnect'] = $sessionResult;
             }
         }
 
@@ -407,8 +413,13 @@ class RadiusService
 
         // Only disconnect if requested
         if ($disconnect) {
-            // If NAS config is provided, use it directly (bypasses radacct lookup)
-            if ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+            // Priority 1: Try session-based disconnect
+            $sessionResult = $this->disconnectUser($username);
+
+            if ($sessionResult['success'] || count($sessionResult['sessions']) > 0 || ($sessionResult['message'] ?? '') !== 'No active sessions') {
+                $result['disconnect'] = $sessionResult;
+            } elseif ($nasConfig && ! empty($nasConfig['ip']) && ! empty($nasConfig['secret'])) {
+                // Priority 2: Blind disconnect fallback
                 $result['disconnect'] = $this->runRadclientCommand(
                     $nasConfig['ip'],
                     (int) ($nasConfig['port'] ?? 3799),
@@ -417,14 +428,13 @@ class RadiusService
                     [],
                     'disconnect'
                 );
-                Log::info('Direct disconnect command sent', [
+                Log::info('Direct disconnect command sent (fallback)', [
                     'username' => $username,
                     'nas_ip' => $nasConfig['ip'],
                     'nas_port' => $nasConfig['port'] ?? 3799,
                 ]);
             } else {
-                // Fallback to session-based disconnect (requires radacct data)
-                $result['disconnect'] = $this->disconnectUser($username);
+                $result['disconnect'] = $sessionResult;
             }
         }
 
@@ -1334,8 +1344,9 @@ class RadiusService
             }
         }
 
-        $inputData = implode(', ', $inputLines);
-        $maskedCommand = sprintf('echo "%s" | radclient -t %d -r 1 -x %s:%s %s ****', $inputData, $timeout, $ipAddress, $port, $command);
+        // Use newlines for separating attributes - standard for radclient
+        $inputData = implode("\n", $inputLines);
+        $maskedCommand = sprintf('echo "%s" | radclient -t %d -r 1 -x %s:%s %s ****', str_replace("\n", ", ", $inputData), $timeout, $ipAddress, $port, $command);
 
         Log::info('radclient: Preparing command', [
             'command' => $maskedCommand,
@@ -1347,9 +1358,10 @@ class RadiusService
         ]);
 
         // METHOD 1: shell_exec (primary)
+        // Use printf to ensure newlines are passed correctly
         $shellCommand = sprintf(
-            'echo "%s" | radclient -t %d -r 1 -x %s:%s %s %s 2>&1',
-            addslashes($inputData),
+            'printf "%%s" %s | radclient -t %d -r 1 -x %s:%s %s %s 2>&1',
+            escapeshellarg($inputData), // quotes preserved, newlines preserved
             $timeout,
             escapeshellarg($ipAddress),
             escapeshellarg((string) $port),
@@ -1366,7 +1378,7 @@ class RadiusService
         // METHOD 2: Process (fallback/confirmation)
         $processCommand = sprintf('radclient -t %d -r 1 -x %s:%s %s %s', $timeout, $ipAddress, $port, $command, $secret);
         $process = Process::fromShellCommandline($processCommand);
-        $process->setInput(implode("\n", $inputLines) . "\n");
+        $process->setInput($inputData);
         $process->setTimeout($timeout + 2);
 
         Log::info('radclient: Trying Process...');
